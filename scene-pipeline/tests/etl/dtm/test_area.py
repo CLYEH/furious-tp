@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 
 import pytest
+
 from scene_pipeline.etl.dtm.area import (
     default_area_path,
     default_grid_path,

@@ -15,6 +15,7 @@ import sys
 import pytest
 import rasterio
 import requests
+
 from scene_pipeline.etl.dtm.__main__ import main
 
 from .conftest import M1_E_MAX, M1_E_MIN, M1_N_MAX, M1_N_MIN

@@ -12,6 +12,7 @@ import json
 
 import pytest
 import requests
+
 from scene_pipeline.etl.dtm.errors import DtmSourceError, DtmSourceMetadataError
 from scene_pipeline.etl.dtm.source import (
     REQUIRED_SOURCE_FIELDS,

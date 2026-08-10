@@ -10,6 +10,7 @@ can shave a strip off the edge of the area the rest of M1 assumes it has.
 from __future__ import annotations
 
 import pytest
+
 from scene_pipeline.etl.dtm.area import Bbox
 from scene_pipeline.etl.dtm.errors import DtmGridError
 from scene_pipeline.etl.dtm.grid import (
