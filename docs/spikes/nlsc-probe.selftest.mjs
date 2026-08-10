@@ -18,6 +18,13 @@
 // Layer 2's independent mutation run produced four mutants that passed all 12
 // original cases. Each [round-2] case was verified red against the specific
 // mutant it targets before being kept — see the ticket [handoff] for the run.
+//
+// Round 3 added three more cases marked [round-3], from Layer 2's 30-mutant run
+// on the round-2 exam: three mutants survived, all of them whole branches the
+// exam never entered (`invalid_json`, `region` bounding volumes, transport
+// errors reaching the abort rule). The shipped probe was right in all three
+// cases; only the exam was missing. Same discipline: each case was run against
+// the mutant it targets and confirmed red before being kept.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -224,6 +231,36 @@ test("integrity: bodies that differ between samples are reported unstable, with 
   }
 });
 
+// [round-3] Found by Layer 2's mutation run on the round-2 exam: the
+// `invalid_json` branch had NO coverage, so deleting the JSON check entirely
+// survived all 18 cases. A body that decodes cleanly but is not a tileset (an
+// error page, an HTML interstitial, a truncated write) would then be counted
+// decodable, handed a `decodedSha256`, and fed straight into the D5 fingerprint
+// — §5.3 of the report keys change detection on exactly that hash. This is the
+// same hole `be889ef` closed for the zero-sample case, one branch over.
+test("integrity: a decodable body that is not JSON is a defect, never a fingerprintable sample", async () => {
+  const body = gzipSync(Buffer.from("<html><body>service temporarily unavailable</body></html>"));
+  const s = await serve((req, res) => {
+    res.writeHead(200, { "content-type": "application/json", "content-encoding": "gzip" });
+    res.end(body);
+  });
+  try {
+    const r = await runProbe(["--mode=integrity", `--url=${s.origin}/tileset.json`, "--samples=2", "--rps=2"]);
+    assert.equal(r.code, 4, "a body that is not a tileset must not exit 0");
+    const out = parse(r.stdout);
+    assert.equal(out.integrity.decodable, 0, "a non-JSON body must not count as decodable");
+    assert.equal(out.integrity.defects.length, 2);
+    assert.equal(out.integrity.defects[0].kind, "invalid_json");
+    assert.equal(out.integrity.samples[0].decodedSha256, undefined, "a non-JSON body was given a decoded fingerprint");
+    assert.equal(out.integrity.samples[0].decodedBytes, undefined);
+    // Nothing may reach the D5 fingerprint from a body that never parsed.
+    assert.deepEqual(out.versionSignals.decodedBodySha256, []);
+    assert.equal(out.versionSignals.bodyStableAcrossSamples, null);
+  } finally {
+    await s.close();
+  }
+});
+
 test("429 aborts immediately and is never counted as a good sample", async () => {
   let n = 0;
   const s = await serve((req, res) => {
@@ -265,6 +302,39 @@ test("a sustained error rate aborts the run", async () => {
     assert.equal(out.aborted, true);
     assert.equal(out.abortReason, "error_rate");
     assert.ok(out.requests.total < 50);
+  } finally {
+    await s.close();
+  }
+});
+
+// [round-3] Found by Layer 2's mutation run on the round-2 exam: dropping
+// `transportError` from the error-rate arithmetic survived all 18 cases,
+// because the only abort case used HTTP 503s. Connections that fail outright
+// are the shape a rate-limiter or a firewall block takes when it does NOT
+// answer 429 — and a probe that keeps dialling an endpoint refusing it is
+// exactly the behaviour the report promises this tool cannot exhibit.
+test("repeated transport errors abort the run instead of spending the whole budget", async () => {
+  const dead = "http://127.0.0.1:1/tile.b3dm"; // nothing listens on port 1
+  const s = await serve((req, res) => {
+    json(res, {
+      asset: { version: "1.0" },
+      geometricError: 500,
+      root: { boundingVolume: { sphere: [0, 0, 0, 1e9] }, geometricError: 100, content: { uri: dead } },
+    });
+  });
+  try {
+    const r = await runProbe(["--mode=drive", `--root=${s.origin}/tileset.json`, "--depth=2", "--max-requests=12", "--rps=2"]);
+    assert.equal(r.code, 3, "a run that cannot reach the tiles must abort, not exit clean");
+    const out = parse(r.stdout);
+    assert.equal(out.aborted, true);
+    assert.equal(out.abortReason, "transport_error");
+    assert.ok(out.requests.transportError >= 4, `transport failures were not counted: ${out.requests.transportError}`);
+    assert.ok(out.requests.total < 12, `abort must stop the run early, got ${out.requests.total} of 12`);
+    assert.equal(out.latencyMs.count, out.requests.ok, "a failed connection must not enter the latency samples");
+    assert.ok(
+      out.findings.some((f) => f.kind === "aborted" && f.reason === "transport_error"),
+      "the abort and its reason must be in the findings, not only in the exit code",
+    );
   } finally {
     await s.close();
   }
@@ -430,6 +500,65 @@ test("drive: tiles outside the route's bounding volumes are never requested", as
     assert.ok(!paths.some((p) => p.includes("far.b3dm")), "a tile outside every route bounding volume was fetched");
     const out = parse(r.stdout);
     assert.equal(out.drive.tilesDiscovered, 2, "discovery must keep root + on-route tile only");
+  } finally {
+    await s.close();
+  }
+});
+
+// [round-3] Found by Layer 2's mutation run on the round-2 exam: the case above
+// only ever exercises `sphere` bounding volumes, so making the `region` branch
+// return true unconditionally survived all 18 cases. `region` is the other form
+// the 3D Tiles spec defines for georeferenced tilesets — a tileset that used it
+// would be walked without any route filter at all, silently turning the AC3
+// latency figures into "whatever tiles came first" and multiplying the request
+// count against a live public service.
+test("drive: route filtering also applies to region bounding volumes", async () => {
+  const rad = (deg) => (deg * Math.PI) / 180;
+  // [west, south, east, north, minHeight, maxHeight], radians per the spec.
+  const onRoute = [rad(121.56), rad(25.03), rad(121.57), rad(25.04), 0, 600];
+  const offRoute = [rad(120.19), rad(22.99), rad(120.21), rad(23.01), 0, 600]; // ~250 km away
+  const s = await serve((req, res) => {
+    const path = req.url.split("?")[0];
+    if (path.endsWith(".b3dm")) {
+      const body = Buffer.alloc(64);
+      body.write("b3dm", 0, "ascii");
+      res.writeHead(200, { "content-type": "application/octet-stream" });
+      res.end(body);
+      return;
+    }
+    json(res, {
+      asset: { version: "1.0" },
+      geometricError: 500,
+      root: {
+        boundingVolume: { region: onRoute },
+        geometricError: 100,
+        content: { uri: "root.b3dm" },
+        children: [
+          { boundingVolume: { region: onRoute }, geometricError: 50, content: { uri: "near.b3dm" } },
+          { boundingVolume: { region: offRoute }, geometricError: 50, content: { uri: "far.b3dm" } },
+        ],
+      },
+    });
+  });
+  try {
+    const r = await runProbe([
+      "--mode=drive",
+      `--root=${s.origin}/tileset.json`,
+      "--route=121.5645,25.0338",
+      "--depth=3",
+      "--max-requests=6",
+      "--rps=2",
+    ]);
+    assert.equal(r.code, 0, r.stderr);
+    const paths = s.state.requests.map((q) => q.url);
+    assert.ok(paths.some((p) => p.includes("near.b3dm")), "the on-route tile inside the region was never fetched");
+    assert.ok(!paths.some((p) => p.includes("far.b3dm")), "a tile outside every route region was fetched");
+    const out = parse(r.stdout);
+    assert.equal(out.drive.tilesDiscovered, 2, "discovery must keep root + on-route tile only");
+    assert.ok(
+      !out.findings.some((f) => f.kind === "unsupported_bounding_volume"),
+      "region is a supported bounding volume and must not be reported as unsupported",
+    );
   } finally {
     await s.close();
   }
