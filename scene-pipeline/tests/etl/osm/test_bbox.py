@@ -274,6 +274,31 @@ def test_cut_on_the_n_axis_snaps_that_axis() -> None:
     assert runs[0].points[1][1] == BOX.n_max  # exact on the crossed axis
 
 
+def test_cut_is_snapped_not_merely_interpolated() -> None:
+    # Added after mutation testing: removing the snap from `_snap` survived the
+    # rest of this exam, because for Taipei-scale segments `p + ((h-p)/d)*d`
+    # happens to return exactly `h` in double precision — the two implementations
+    # are indistinguishable on realistic data, so every other case here passed.
+    #
+    # These absurd coordinates are a *witness*: a span of ~2.2e7 m where naive
+    # interpolation lands on 307500.00000000093 instead of 307500.0. The
+    # guarantee has to be unconditional rather than usually-true, because the
+    # same clipper is reused at 500 m tile granularity by the tile tickets, and
+    # grid.md §接縫規則 clause 1 asks for bit equality, not near equality.
+    bbox = BBox(e_min=307000.0, n_min=2769000.0, e_max=307500.0, n_max=2770000.0)
+    p = (-5495889.486020419, 2769600.0)
+    q = (16578436.147616692, 2769600.0)
+
+    dx = q[0] - p[0]
+    naive = p[0] + ((bbox.e_max - p[0]) / dx) * dx
+    assert naive != bbox.e_max  # the witness really does distinguish the two
+
+    runs = clip_polyline([p, q], bbox)
+    assert len(runs) == 1
+    assert runs[0].points[-1][0] == bbox.e_max  # exact, by snapping
+    assert runs[0].points[0][0] == bbox.e_min
+
+
 def test_many_crossings_are_all_preserved() -> None:
     # Oversized input: 100 excursions in and out. Nothing may be silently
     # coalesced or truncated.
