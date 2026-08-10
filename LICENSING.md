@@ -44,7 +44,7 @@ conflation 後的道路資料庫為 ODbL「Derivative Database」(判定依
 3. 各來源之授權依據:
    - data.taipei:[平臺授權條款頁](https://data.taipei/rule)(全文採 OGDL v1)。
    - 內政部 20m DTM:[data.gov.tw dataset 35430](https://data.gov.tw/dataset/35430)。
-   - NLSC:於 [data.gov.tw](https://data.gov.tw/dataset/39082) 釋出之資料集採 OGDL v1;3D 建物 tile **服務條款**由 Spike R1(FTP-5)確認後,本節 NLSC 條目才能定稿。
+   - NLSC:NLSC 於 data.gov.tw 釋出之資料集帶 OGDL v1 授權標示(驗證例:[dataset 39082](https://data.gov.tw/dataset/39082),非圖資資料集,僅證明 NLSC 以本條款釋出開放資料);本專案建物來源實際適用之授權與**服務條款**由 Spike R1(FTP-5)確認後,本節 NLSC 條目才能定稿。
 
 ## Attribution 文字(草案)
 

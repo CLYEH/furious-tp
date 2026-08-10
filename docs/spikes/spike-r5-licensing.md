@@ -113,7 +113,7 @@
 |---|---|---|
 | data.taipei(北市道路 GIS 等) | 政府資料開放授權條款-第1版(平臺授權頁全文採用) | [data.taipei 授權條款頁](https://data.taipei/rule) |
 | 內政部 20m DTM | 政府資料開放授權條款-第1版(資料集頁「授權方式」;API `license` 欄位驗證) | [data.gov.tw dataset 35430「內政部20公尺網格數值地形模型資料」](https://data.gov.tw/dataset/35430) |
-| NLSC(國土測繪中心) | 於 data.gov.tw 釋出之資料集採政府資料開放授權條款-第1版(API `license` 欄位驗證);**3D 建物 tile 服務之服務條款屬 FTP-5**,此處為條件式結論 | [data.gov.tw NLSC 資料集例](https://data.gov.tw/dataset/39082);服務條款 → Spike R1 |
+| NLSC(國土測繪中心) | NLSC 於 data.gov.tw 釋出之資料集帶政府資料開放授權條款-第1版標示(API `license` 欄位驗證;驗證例為**非圖資**資料集,僅證明 NLSC 以本條款釋出開放資料);**3D 建物圖資實際適用之授權與服務條款屬 FTP-5**,此處為條件式結論 | [data.gov.tw NLSC 資料集驗證例](https://data.gov.tw/dataset/39082);服務條款 → Spike R1 |
 
 風險備註(轉交 FTP-5):data.gov.tw 民眾需求區 [「3D建物模型」](https://data.gov.tw/suggests/136485) 顯示臺北市轄內 3D 建物模型未由 NLSC 提供、臺北市政府亦未另行開放——信義區建物來源可用性須由 FTP-5 確認。
 
