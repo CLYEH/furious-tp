@@ -15,6 +15,8 @@
 ## 調查(spikes)
 
 - `spikes/` — 動工前查證報告(NLSC 服務、授權相容性;隨 FTP-5/FTP-6 產出)
+  - [spikes/nlsc.md](spikes/nlsc.md) — Spike R1:NLSC 三維國家底圖 3D Tiles 服務可行性與條款查證
+  - `spikes/nlsc-probe.mjs` — R1 可重跑量測 script(實驗用,不進正式模組);自我測試 `spikes/nlsc-probe.selftest.mjs`
 
 ## Repo 根目錄的治理檔
 
