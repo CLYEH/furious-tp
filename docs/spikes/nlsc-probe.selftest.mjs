@@ -25,6 +25,11 @@
 // errors reaching the abort rule). The shipped probe was right in all three
 // cases; only the exam was missing. Same discipline: each case was run against
 // the mutant it targets and confirmed red before being kept.
+//
+// Round 4 strengthened the `region` case ([round-4] below) rather than adding
+// one: Layer 2 mutated its two axes separately and both mutants survived 21/21.
+// A case that only ever tests "far away on both axes" cannot detect a filter
+// that has stopped checking one of them.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -512,11 +517,21 @@ test("drive: tiles outside the route's bounding volumes are never requested", as
 // would be walked without any route filter at all, silently turning the AC3
 // latency figures into "whatever tiles came first" and multiplying the request
 // count against a live public service.
+// [round-4] Strengthened after Layer 2 mutated the two axes of the region test
+// SEPARATELY: dropping the longitude comparison, and dropping the latitude
+// comparison, each survived all 21 cases, because the only off-route region
+// here was far away on BOTH axes. A half-working filter admits everything in
+// the route's latitude band (or longitude band) — an entire strip of Taiwan —
+// so the two single-axis regions below are what make this case able to fail.
 test("drive: route filtering also applies to region bounding volumes", async () => {
   const rad = (deg) => (deg * Math.PI) / 180;
   // [west, south, east, north, minHeight, maxHeight], radians per the spec.
   const onRoute = [rad(121.56), rad(25.03), rad(121.57), rad(25.04), 0, 600];
   const offRoute = [rad(120.19), rad(22.99), rad(120.21), rad(23.01), 0, 600]; // ~250 km away
+  // A region that shares ONLY the route's latitude band, and one that shares
+  // ONLY its longitude band: a filter that tests just one axis lets these in.
+  const latBandOnly = [rad(120.19), rad(25.03), rad(120.21), rad(25.04), 0, 600];
+  const lonBandOnly = [rad(121.56), rad(22.99), rad(121.57), rad(23.01), 0, 600];
   const s = await serve((req, res) => {
     const path = req.url.split("?")[0];
     if (path.endsWith(".b3dm")) {
@@ -536,6 +551,8 @@ test("drive: route filtering also applies to region bounding volumes", async () 
         children: [
           { boundingVolume: { region: onRoute }, geometricError: 50, content: { uri: "near.b3dm" } },
           { boundingVolume: { region: offRoute }, geometricError: 50, content: { uri: "far.b3dm" } },
+          { boundingVolume: { region: latBandOnly }, geometricError: 50, content: { uri: "latband.b3dm" } },
+          { boundingVolume: { region: lonBandOnly }, geometricError: 50, content: { uri: "lonband.b3dm" } },
         ],
       },
     });
@@ -553,6 +570,14 @@ test("drive: route filtering also applies to region bounding volumes", async () 
     const paths = s.state.requests.map((q) => q.url);
     assert.ok(paths.some((p) => p.includes("near.b3dm")), "the on-route tile inside the region was never fetched");
     assert.ok(!paths.some((p) => p.includes("far.b3dm")), "a tile outside every route region was fetched");
+    assert.ok(
+      !paths.some((p) => p.includes("latband.b3dm")),
+      "a region sharing only the route's latitude band was fetched: the region test is not checking longitude",
+    );
+    assert.ok(
+      !paths.some((p) => p.includes("lonband.b3dm")),
+      "a region sharing only the route's longitude band was fetched: the region test is not checking latitude",
+    );
     const out = parse(r.stdout);
     assert.equal(out.drive.tilesDiscovered, 2, "discovery must keep root + on-route tile only");
     assert.ok(
