@@ -1,0 +1,28 @@
+{
+  "spec_version": "0.1.0",
+  "ellipsoid": "GRS80",
+  "note": "EPSG:3826 (E, N) + 橢球高 h → TWD97 geocentric ECEF (X, Y, Z)。數值以 pyproj 3.6.1 / PROJ(extended Krueger tmerc + cart, GRS80)產生;wgs84_check 為逆投影中間值 [lon, lat](除錯用)。兩端單元測試應以宣告容差 tolerance_m 比對各軸。轉換慣例(含 geoid_offset_m 之正高→橢球高步驟)見 spec/grid.md。",
+  "vectors": [
+    {
+      "name": "M1 bbox SW corner, h=0",
+      "epsg3826": [305500.0, 2767500.0, 0.0],
+      "wgs84_check": [121.5498908525, 25.0145340364],
+      "ecef": [-3026076.1241, 4928469.3296, 2680533.5128],
+      "tolerance_m": 0.001
+    },
+    {
+      "name": "M1 bbox NE corner, h=100",
+      "epsg3826": [309000.0, 2771000.0, 100.0],
+      "wgs84_check": [121.5847170028, 25.0459993165],
+      "ecef": [-3028346.2997, 4925449.9962, 2683734.0173],
+      "tolerance_m": 0.001
+    },
+    {
+      "name": "near Taipei 101, h=5",
+      "epsg3826": [307000.0, 2769650.0, 5.0],
+      "wgs84_check": [121.5648410362, 25.033888348],
+      "ecef": [-3026889.6546, 4926910.7147, 2682478.315],
+      "tolerance_m": 0.001
+    }
+  ]
+}
