@@ -61,8 +61,16 @@ RESAMPLING_METHODS = {
 }
 
 # A pixel counts as valid only if the resampled validity mask says its whole
-# kernel was valid. The epsilon absorbs float noise in the warp, nothing more.
-_FULLY_VALID = 1.0 - 1e-6
+# kernel was valid, i.e. the surviving weights sum to exactly 1.
+#
+# The comparison is two-sided, and that matters: cubic kernels carry negative
+# weights, so dropping an *invalid* neighbour that happened to hold a negative
+# weight pushes the surviving sum ABOVE 1 (measured here: 1.035156 with one
+# void pixel and a half-pixel shift). A one-sided ">= 1 - eps" test waves those
+# pixels through as fully valid while their value is missing a contributor —
+# contamination, arriving by the one route the guard exists to close.
+# The epsilon absorbs float noise in the warp, nothing more.
+_MASK_TOLERANCE = 1e-6
 
 
 @dataclass(frozen=True)
@@ -259,7 +267,7 @@ def _resample_onto(
         **warp,
     )
 
-    keep = mask >= _FULLY_VALID
+    keep = np.abs(mask - 1.0) <= _MASK_TOLERANCE
     out = np.where(keep, values, OUTPUT_NODATA).astype("float32")
     return out, float(keep.sum()) / float(keep.size)
 

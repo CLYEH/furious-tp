@@ -124,6 +124,27 @@ def test_reprojection_never_emits_a_contaminated_elevation(voided_offset_source,
     np.testing.assert_allclose(data[valid], expected[valid], rtol=0, atol=1e-2)
 
 
+@pytest.mark.parametrize("method", ["bilinear", "cubic", "average"])
+def test_no_kernel_lets_a_void_contaminate_its_neighbours(voided_offset_source, run_etl, method):
+    """The same property as above, held against every interpolating kernel.
+
+    Not redundant with the bilinear case: cubic weights can be negative, so
+    excluding an invalid neighbour can make the surviving weights sum to more
+    than 1 (measured: 1.035). A containment test written as "mask >= 1 - eps"
+    passes bilinear and average and still admits contaminated cubic pixels,
+    which is precisely the bug this case exists to catch. Nearest is excluded
+    because it cannot mix pixels at all, so it has nothing to contaminate with.
+    """
+    result = run_etl(voided_offset_source, resampling=method)
+    data, _ = read_band(result.output_path)
+    ee, nn = pixel_centres(result.grid.e_min, result.grid.n_max, RESOLUTION_M,
+                           result.grid.width, result.grid.height)
+    expected = linear_elevation(ee, nn)
+    valid = data != OUTPUT_NODATA
+    assert valid.any()
+    np.testing.assert_allclose(data[valid], expected[valid], rtol=0, atol=1e-2)
+
+
 def test_the_void_grows_by_the_kernel_footprint_when_resampling(voided_offset_source, run_etl):
     """A half-pixel-shifted kernel touches the void from outside it, so the
     invalid region must be strictly larger than the void's own footprint."""
