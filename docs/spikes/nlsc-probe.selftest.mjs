@@ -276,6 +276,22 @@ test("an unknown mode is a usage error, not a default run", async () => {
   assert.match(r.stderr, /mode/i);
 });
 
+// [round-2] Found by this round's own mutation run: deleting the mode check
+// entirely still passed the case above, because a bad mode then failed on the
+// missing --root and that message also contains the word "mode". With --root
+// supplied, the deleted check would have silently run a drive against the
+// service. The property that matters is "makes no requests", not "exits 2".
+test("an unknown mode makes no requests at all, even with every other flag valid", async () => {
+  const s = await serve(tilesetTree);
+  try {
+    const r = await runProbe(["--mode=hammer", `--root=${s.origin}/l0/tileset.json`, "--depth=3", "--max-requests=5", "--rps=2"]);
+    assert.equal(r.code, 2, "an unrecognised mode must be rejected, not treated as a default");
+    assert.equal(s.state.requests.length, 0, "an unrecognised mode reached the network");
+  } finally {
+    await s.close();
+  }
+});
+
 // --- boundary values ------------------------------------------------------
 
 test("--rps above the hard cap is clamped, and the clamp is disclosed", async () => {
@@ -354,6 +370,71 @@ test("--max-requests=0 does nothing and says so", async () => {
   }
 });
 
+// --- route filtering ------------------------------------------------------
+
+/** WGS84 lon/lat -> ECEF, mirroring the probe's own geodesy. */
+function ecef(lon, lat) {
+  const a = 6378137;
+  const f = 1 / 298.257223563;
+  const e2 = f * (2 - f);
+  const rlat = (lat * Math.PI) / 180;
+  const rlon = (lon * Math.PI) / 180;
+  const n = a / Math.sqrt(1 - e2 * Math.sin(rlat) ** 2);
+  return [n * Math.cos(rlat) * Math.cos(rlon), n * Math.cos(rlat) * Math.sin(rlon), n * (1 - e2) * Math.sin(rlat)];
+}
+
+// [round-2] Found by this round's own mutation run: making the bounding-volume
+// test always return true survived the whole exam. Route filtering is what makes
+// the latency figures mean "a drive through Xinyi" rather than "whatever tiles
+// came first" — and against the live service it is also what keeps the request
+// count small. An unfiltered walk would both misreport AC3 and hit the agency
+// harder than the report claims.
+test("drive: tiles outside the route's bounding volumes are never requested", async () => {
+  const onRoute = ecef(121.5645, 25.0338); // Taipei 101
+  const offRoute = ecef(120.2, 23.0); // ~250 km away
+  const s = await serve((req, res) => {
+    const path = req.url.split("?")[0];
+    if (path.endsWith(".b3dm")) {
+      const body = Buffer.alloc(64);
+      body.write("b3dm", 0, "ascii");
+      res.writeHead(200, { "content-type": "application/octet-stream" });
+      res.end(body);
+      return;
+    }
+    json(res, {
+      asset: { version: "1.0" },
+      geometricError: 500,
+      root: {
+        boundingVolume: { sphere: [...onRoute, 1e6] },
+        geometricError: 100,
+        content: { uri: "root.b3dm" },
+        children: [
+          { boundingVolume: { sphere: [...onRoute, 500] }, geometricError: 50, content: { uri: "near.b3dm" } },
+          { boundingVolume: { sphere: [...offRoute, 500] }, geometricError: 50, content: { uri: "far.b3dm" } },
+        ],
+      },
+    });
+  });
+  try {
+    const r = await runProbe([
+      "--mode=drive",
+      `--root=${s.origin}/tileset.json`,
+      "--route=121.5645,25.0338",
+      "--depth=3",
+      "--max-requests=6",
+      "--rps=2",
+    ]);
+    assert.equal(r.code, 0, r.stderr);
+    const paths = s.state.requests.map((q) => q.url);
+    assert.ok(paths.some((p) => p.includes("near.b3dm")), "the on-route tile was never fetched");
+    assert.ok(!paths.some((p) => p.includes("far.b3dm")), "a tile outside every route bounding volume was fetched");
+    const out = parse(r.stdout);
+    assert.equal(out.drive.tilesDiscovered, 2, "discovery must keep root + on-route tile only");
+  } finally {
+    await s.close();
+  }
+});
+
 // --- concurrency ----------------------------------------------------------
 
 test("requests are strictly sequential (never parallel against the service)", async () => {
@@ -370,6 +451,35 @@ test("requests are strictly sequential (never parallel against the service)", as
 });
 
 // --- permissions ----------------------------------------------------------
+
+// [round-2] The corrupt endpoints return server process memory (see nlsc.md
+// §3.5). Anything this probe prints may end up in a ticket, a PR or an email to
+// the agency, so the probe must characterise those bodies — length, NUL ratio,
+// hash — and never reproduce them. This is a disclosure property, not a
+// formatting preference.
+test("response bodies are never echoed to stdout, only characterised", async () => {
+  const marker = "LEAKED-RESIDUE-MARKER-8f31c0";
+  const s = await serve((req, res) => {
+    // Undecodable body (declared gzip, is not) carrying recognisable content —
+    // the shape of the live defect.
+    const body = Buffer.alloc(4096);
+    body.write(marker, 100, "ascii");
+    res.writeHead(200, { "content-type": "application/json", "content-encoding": "gzip", "content-length": String(body.length) });
+    res.end(body);
+  });
+  try {
+    const r = await runProbe(["--mode=integrity", `--url=${s.origin}/tileset.json`, "--samples=1", "--rps=2"]);
+    assert.equal(r.code, 4);
+    assert.ok(!r.stdout.includes(marker), "probe echoed response body content to stdout");
+    assert.ok(!r.stderr.includes(marker), "probe echoed response body content to stderr");
+    const out = parse(r.stdout);
+    // It must still say something useful about the body it refused to print.
+    assert.match(out.integrity.samples[0].rawSha256, /^[0-9a-f]{64}$/);
+    assert.equal(out.integrity.samples[0].bytes, 4096);
+  } finally {
+    await s.close();
+  }
+});
 
 test("no credentials are ever sent (the service is public and must stay anonymous)", async () => {
   const s = await serve((req, res) => {
