@@ -15,9 +15,11 @@
 ## 調查(spikes)
 
 - `spikes/` — 動工前查證報告(NLSC 服務、授權相容性;隨 FTP-5/FTP-6 產出)
+  - [spikes/spike-r5-licensing.md](spikes/spike-r5-licensing.md) — Spike R5:衍生 tiles 散布授權相容性(ODbL × 政府開放授權)
 
 ## Repo 根目錄的治理檔
 
 - [`CLAUDE.md`](../CLAUDE.md) — 專案指示與 agent 工作規則
 - [`DESIGN.md`](../DESIGN.md) — 視覺設計規範(canonical design.md 格式)
+- [`LICENSING.md`](../LICENSING.md) — 編譯產物(tiles)之資料授權與散布義務(草案;Spike R5 產出)
 - 需求與架構(PRD/RFC):Linear 專案「臺北開放資料 3D 數位孿生城市」文件

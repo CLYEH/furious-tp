@@ -1,0 +1,204 @@
+# Spike R5:衍生 tiles 散布授權相容性(ODbL × 政府開放授權)
+
+> **狀態**:完成 — 結論:**可散布(附條件)**,不觸發 escalate
+> **Ticket**:FTP-6(RFC v2 R5,阻擋性)
+> **性質**:工程盡職調查(engineering due diligence),**非正式法律意見**。
+> **Out of scope**:NLSC 服務條款(屬 Spike R1 / FTP-5)。
+> **產物**:本報告 + repo 根目錄 [`LICENSING.md`](../../LICENSING.md) 草案。
+>
+> **round 2 更正(2026-08-10)**:terrain 與 props 兩列對**本專案自身已核准設計**的描述與 RFC D5 / D9 / D10 相反,已更正(見 AC5 與下方各節)。terrain 路廊帶含 OSM 衍生成分,其 ODbL 定位**本票未裁定**,依 FTP-6 `[decision]` 延後——**不是**已解決,亦**不是**已否定。
+
+## 查證清單(exam;declaration commit 凍結)
+
+每一項完成的標準:附**條文原文引用**與**出處連結**。未達標不得勾選。
+
+### AC1 — ODbL 義務清單
+
+- [x] 「Database」「Derivative Database」「Produced Work」「Collective Database」定義:引用 ODbL 1.0 §1 原文 + 出處連結
+- [x] Attribution / notice 義務:引用 §4.2、§4.3 原文
+- [x] Share-alike 義務:引用 §4.4 原文
+- [x] Derivative Database 存取義務(machine-readable copy / diff):引用 §4.6 原文
+- [x] Conflation(OSM ↔ 北市道路 GIS)構成 Derivative Database 或 Collective Database 之判定:引用 OSMF community guideline(Collective Database Guideline)
+
+### AC2 — 政府資料開放授權義務清單
+
+- [x] 政府資料開放授權條款第1版:顯名標示義務條文引用 + 出處連結
+- [x] 政府資料開放授權條款第1版:與 CC BY 4.0 相容性條文引用
+- [x] data.taipei:平臺適用授權之依據 + 出處連結
+- [x] 內政部 20m DTM:資料集授權依據 + 出處連結
+- [ ] NLSC 開放資料(建物 / 通用電子地圖):授權依據 + 出處連結(服務條款除外 → FTP-5)
+  **未完成,移交 FTP-5**(round 2 更正,原誤勾為完成):現有證據是 [dataset 39082「內政部國土測繪中心各售圖站」](https://data.gov.tw/dataset/39082)——**非圖資資料集**,只能證明 NLSC 曾以本條款釋出開放資料,撐不起「NLSC **圖資**之授權依據」這項主張。另依 D5,NLSC 資料**不進入本專案編譯產物**(見 AC3 散布方案表),故本報告與 `LICENSING.md` 的散布方案已不需要此項成立。
+
+### AC3 — 疊加結論
+
+- [x] 散布方案表:tile 類型(road / terrain / props)× 來源資料 × 來源授權 × 產物授權
+- [x] 可否散布結論明確:「可 / 不可 / 附條件可」三擇一,附推理
+- [x] Attribution 文字草案:含 `(c) OpenStreetMap contributors` 與各政府機關顯名標示
+
+### AC4 — LICENSING.md 草案
+
+- [x] `LICENSING.md` 存在於 repo 根目錄,明確標注「工程盡職調查、非法律意見」
+- [x] `LICENSING.md` 內每項義務附出處連結(ticket Verification Step)
+- [x] 若結論為「不能散布」:已發 `[escalate]` + `needs-human`(結論為可散布,此項 N/A)
+
+### AC5 — 文件與已核准設計之一致性(round 2 新增)
+
+> **本節為新增,非原始 declaration 的一部分。** 起因是第 2 輪 Layer 2 blocking(B-A):兩份文件把本專案**已核准的 RFC 決策**描述反了,其中一句還以「對 pipeline 具拘束力」之姿禁止了已核准的 D9。原考卷 16 項無法攔截這類缺陷——它只檢查「授權引文是否正確」,不檢查「文件對本專案自身設計的敘述是否正確」。
+>
+> 原 **16 項一項未刪、未放寬**;以下 4 項為**新增**,使考卷更嚴。核對對象:RFC 決策 D3 / D5 / D9 / D10 及其派生 ticket 的 Context / AC / Out of Scope(FTP-31、FTP-32、FTP-34、FTP-35、FTP-36、FTP-39)。
+
+- [x] 散布方案表每一列的「來源資料」欄,均可回溯至具體 RFC 決策或 ticket 的 AC / Out of Scope,並於文中註明依據
+  → road = D10(FTP-31);terrain = DTM ⊕ D9 路廊高程(FTP-34 Context + AC);props = D5 / FTP-36 + FTP-35;NLSC 已依 D5 / FTP-36 Out of Scope / FTP-39 移出本表。
+- [x] 文件中任何自稱對 pipeline **具拘束力**的工程約束,均已與相關一級決策交叉檢查且不與之牴觸;凡尚未裁定者一律標示為「未裁定」,不得寫成約束或已解決
+  → 原「terrain 零 OSM」之拘束性宣告字面上禁止已核准的 D9,已撤除並改列為未決事項;僅保留 props 圖層之零 OSM 約束(與 D5 / FTP-35 / FTP-36 一致)。
+- [x] 文件不含未經 RFC 支持之全稱命題(例如「完全不含 / 零 X」);此類敘述須降級為可回溯的具體描述,且**全檔一致**(同一命題不得只改一處)
+  → 以 `grep` 掃過兩份文件全部四處載體(本報告散布方案表整體場景列、推理 3、結論條件 (3),及 `LICENSING.md` 前提條件段),無殘留。
+- [x] 凡指名拘束特定 ticket 者,該 ticket 確為該約束的實作對象(不指錯票)
+  → props 零 OSM 約束原指 FTP-31(road 票),已更正為 FTP-35 / FTP-36。
+
+## 查證結果
+
+以下引文均於 2026-08-10 自來源網站取回核對。
+
+### AC1 — ODbL 1.0 義務清單
+
+出處:[Open Data Commons Open Database License (ODbL) v1.0](https://opendatacommons.org/licenses/odbl/1-0/)。OpenStreetMap 資料依 ODbL 釋出([OSM copyright](https://www.openstreetmap.org/copyright))。
+
+#### 定義(§1)
+
+- **Derivative Database**:
+  > "Derivative Database" – Means a database based upon the Database, and includes any translation, adaptation, arrangement, modification, or any other alteration of the Database or of a Substantial part of the Contents.
+- **Produced Work**:
+  > "Produced Work" – a work (such as an image, audiovisual material, text, or sounds) resulting from using the whole or a Substantial part of the Contents (via a search or other query) from this Database, a Derivative Database, or this Database as part of a Collective Database.
+- **Collective Database**:
+  > "Collective Database" – Means this Database in unmodified form as part of a collection of independent databases in themselves that together are assembled into a collective whole. A work that constitutes a Collective Database will not be considered a Derivative Database.
+
+#### Attribution / notices(§4.2、§4.3)
+
+- §4.2(散布 Database / Derivative Database 時):
+  > 4.2 Notices. If You Publicly Convey this Database, any Derivative Database, or the Database as part of a Collective Database, then You must: a. Do so only under the terms of this License …; b. Include a copy of this License … or its Uniform Resource Identifier (URI) with the Database or Derivative Database …; c. Keep intact any copyright or Database Right notices and notices that refer to this License.
+- §4.3(公開使用 Produced Work 時):
+  > … if you Publicly Use a Produced Work, You must include a notice associated with the Produced Work reasonably calculated to make any Person that uses, views, accesses, interacts with, or is otherwise exposed to the Produced Work aware that Content was obtained from the Database … and that it is available under this License.
+
+OSMF [Attribution Guidelines](https://osmfoundation.org/wiki/Licence/Attribution_Guidelines)(2021-06-25 董事會通過)將上述義務具體化:
+
+> Attribution must be to "OpenStreetMap". Attribution must also make it clear that the data is available under the Open Database License.
+
+- **資料庫形式散布之 safe harbour(本專案 tiles 適用)**:
+  > You must include attribution to OpenStreetMap and either the text of the ODbL or a link to it as part of the database, derivative database, or database as part of a collective database. You must include the notices in a location (such as a relevant directory) where users would be likely to look for it, such as a readme file, or within the data or metadata.
+
+  → attribution 不能只出現在 HUD,必須**隨 tiles 本體交付**(tileset metadata 或同目錄 readme)。
+- **`© OpenStreetMap contributors` 字樣之依據**:
+  > The historical forms of attribution "© OpenStreetMap contributors" or "© OpenStreetMap" are acceptable.
+
+  註(本次查證更正):此字樣**不在** [openstreetmap.org/copyright](https://www.openstreetmap.org/copyright) 頁面文字內——該頁僅要求「credit OpenStreetMap and its contributors」並指向本 guideline。ticket AC 指定之 `(c) OpenStreetMap contributors` 依本 guideline 屬「可接受」形式,故沿用;其權威出處為 Attribution Guidelines,非 copyright 頁。
+
+#### Share-alike(§4.4)與其界限(§4.5)
+
+- §4.4:
+  > 4.4 Share alike. a. Any Derivative Database that You Publicly Use must be only under the terms of: i. This License; ii. A later version …; or iii. A compatible license. … d. … You must not add Contents to Derivative Databases under Section 4.4 a that are incompatible with the rights granted under this License.
+- §4.5(share-alike 不適用之情形):
+  > a. … You are not required to license Collective Databases under this License if You incorporate this Database or a Derivative Database in the collection …; b. Using this Database … to create a Produced Work does not create a Derivative Database for purposes of Section 4.4 …
+
+#### Derivative Database 存取義務(§4.6)
+
+> 4.6 Access to Derivative Databases. If You Publicly Use a Derivative Database or a Produced Work from a Derivative Database, You must also offer to recipients of the Derivative Database or Produced Work a copy in a machine readable form of: a. The entire Derivative Database; or b. A file containing all of the alterations made to the Database or the method of making the alterations …. The Derivative Database (under a.) or alteration file (under b.) must be … free of charge if distributed over the internet.
+
+#### Conflation 判定(OSMF Collective Database Guideline)
+
+出處:[OSMF Licence/Community Guidelines](https://osmfoundation.org/wiki/Licence/Community_Guidelines) → [Collective Database Guideline](https://osmfoundation.org/wiki/Licence/Community_Guidelines/Collective_Database_Guideline_Guideline)。
+
+> An OSM dataset and a non-OSM dataset combined in a single database will be considered independent (and thus form a Collective Database rather than a Derivative Database) so long as the data used for a particular data type is either all OSM or all non-OSM within the same regional cut.
+
+且該 guideline 明定「參照(reference)」即破壞 independence:
+
+> Technically a reference between non-OSM and OSM data can be by a database key or any other method of identifying a specific OSM or non-OSM element that may be used with a database join.
+
+**判定**:RFC D10 conflation 在**同一資料型別(道路)**內混用 OSM 幾何與北市道路 GIS 屬性/幾何,且以逐 feature 匹配(即互相 reference)。不符合「單一型別全 OSM 或全非 OSM」的 independence 條件 → 融合後的道路資料庫是 **Derivative Database**,share-alike(§4.4)與存取義務(§4.6)適用。
+
+### AC2 — 政府資料開放授權條款第1版 義務清單
+
+出處:[政府資料開放授權條款-第1版](https://data.gov.tw/license)(中華民國104年7月27日訂定)。
+
+#### 授與權利(第二點)
+
+> 二、授與權利 (一)各機關所提供之開放資料,授權使用者不限目的、時間及地域、非專屬、不可撤回、免授權金進行利用,利用之方式包括重製、散布、公開傳輸……編輯、改作,包括但不限於開發各種產品或服務型態之衍生物。 (二)使用者得再轉授權他人為前項之利用。
+
+→ 允許改作、散布與**再轉授權**:將政府資料納入 ODbL 衍生資料庫再以 ODbL 條款釋出,屬第二點授權範圍內之利用。
+
+#### 顯名標示義務(第三點(二);含失權效果)
+
+> 三、課予義務 (二)使用者利用依本條款提供之開放資料,及後續之衍生物,應以符合附件所示「顯名聲明」要求之方式,明確標示原資料提供機關之相關聲明;**未盡顯名標示義務者,視為自始未取得開放資料之授權。**
+
+附件顯名聲明格式(**全文**,本次查證補齊——原草案節略了末句):
+
+> 附件:顯名聲明
+> 提供機關／單位 [年份] [開放資料釋出名稱與版本號] 此開放資料依政府資料開放授權條款 (Open Government Data License) 進行公眾釋出,使用者於遵守本條款各項規定之前提下,得利用之。
+> 政府資料開放授權條款: <https://data.gov.tw/license>
+
+因顯名標示為**失權要件**(未盡義務即視為自始未取得授權),attribution 文字採本附件全文格式,不節略。
+
+#### CC BY 4.0 相容(第四點(二))
+
+> 四、(二)本條款與「創用CC授權 姓名標示 4.0 國際版本」相容,使用者依本條款利用開放資料,如後續以「創用CC授權 姓名標示 4.0 國際版本」規定之方式利用,視為符合本條款之規定。
+
+#### 各來源之授權依據
+
+| 來源 | 授權依據 | 出處 |
+|---|---|---|
+| data.taipei(北市道路 GIS、建物輪廓圖資、路樹/路燈設施等) | 政府資料開放授權條款-第1版(平臺授權頁全文採用) | [data.taipei 授權條款頁](https://data.taipei/rule) |
+| 內政部 20m DTM | 政府資料開放授權條款-第1版(資料集頁「授權方式」;API `license` 欄位驗證) | [data.gov.tw dataset 35430「內政部20公尺網格數值地形模型資料」](https://data.gov.tw/dataset/35430) |
+| NLSC(國土測繪中心) | **非本專案編譯產物之來源**(D5:NLSC tiles 永不進物理;FTP-36 Out of Scope:「NLSC 任何資料(D5 禁止)」),故本報告之散布方案不含 NLSC。NLSC 3D Tiles 為 **client 端串流**(FTP-39),其授權與服務條款屬 Spike R1(FTP-5)。已知證據僅 [dataset 39082](https://data.gov.tw/dataset/39082)(「內政部國土測繪中心各售圖站」,**非圖資**,不足以證明圖資授權)——見 AC2 考卷該項已改為未完成 | [data.gov.tw dataset 39082](https://data.gov.tw/dataset/39082);圖資授權與服務條款 → Spike R1 |
+
+風險備註(轉交 FTP-5 / FTP-39):data.gov.tw 民眾需求區 [「3D建物模型」](https://data.gov.tw/suggests/136485) 之**陳情內容**稱「其他縣市的3D建物模型資料都可從……國土測繪中心取得,獨缺臺北市,臺北市也沒有額外在其他地方提供此服務」。該需求狀態為「已回復」,但回覆內容未於頁面公開呈現——**此為民眾主張,非平臺或機關之聲明**,僅作為風險訊號。此風險針對的是 **client 端串流之 NLSC 3D 建物視覺**(FTP-39);**本專案 physics proxy 之建物來源依 D5 為北市建物輪廓圖資(data.taipei / FTP-36),不受此風險影響**。
+
+### AC3 — 疊加結論
+
+#### 散布方案表
+
+| tile 類型 | 來源資料 | 來源授權 | ODbL 定位 | 產物授權(方案) |
+|---|---|---|---|---|
+| road | OSM 道路 ⊕ 北市道路 GIS(D10 conflation) | ODbL 1.0 ⊕ OGDL v1 | **Derivative Database**(見 AC1 判定) | **ODbL 1.0**(§4.4a),附 OGDL 顯名聲明 |
+| terrain | 內政部 20m DTM ⊕ **D9 路廊帶道路求解高程**(源自 D10 conflation road graph) | OGDL v1 ⊕(路廊帶部分)ODbL 1.0 | **未裁定**——路廊帶含 OSM 衍生成分(見推理 3),依 FTP-6 `[decision]` 延後至散布前裁定 | 非路廊帶部分:OGDL 衍生物,附顯名聲明;**路廊帶部分未裁定** |
+| props(路樹/路燈)+ 建物 physics proxy | data.taipei 路樹/路燈設施(FTP-35);北市建物輪廓圖資 footprint extrusion(**D5** / FTP-36) | OGDL v1 | 非 OSM 衍生物(來源皆非 OSM) | OGDL 衍生物,附顯名聲明 |
+| 整體場景(多圖層集合) | 上列全部 | — | Collective Database **(前提未裁定)**——其前提「road 以外圖層不含 OSM 衍生成分」因 D9 對 terrain 不成立,見推理 3 | 未裁定(延後至散布前);props 圖層部分不受影響 |
+
+> **NLSC 3D Tiles 不列入本表**:依 **D5**「NLSC tiles 永不進物理,proxy collider 來源指定為北市建物輪廓圖資(非 NLSC 衍生,迴避託管邊界)」與 **FTP-36 Out of Scope**「NLSC 任何資料(D5 禁止)」,NLSC 資料**不是本專案編譯產物的輸入**;它是 client 端串流(**FTP-39**)。其服務條款屬 FTP-5,與本表之散布方案無涉。(round 2 更正:先前版本把 NLSC 3D 建物列為 props tiles 來源,與 D5 相反。)
+
+#### 推理
+
+1. **road tiles 必須以 ODbL 散布**:conflation 產生 Derivative Database(AC1 判定),§4.4a 要求以 ODbL(或相容授權)公開使用。
+2. **OGDL 資料可以合法納入 ODbL Derivative Database**:OGDL 第二點(一)(二)授權改作、散布、再轉授權且不可撤回、免授權金;其唯一實質義務為顯名標示(第三點(二)),與 ODbL §4.2c「keep intact any copyright … notices」直接相容——顯名聲明隨 tiles 與本文件保留即同時滿足兩者。OGDL 並明文與 CC BY 4.0 相容(第四點(二)),屬 attribution 型授權,無與 share-alike 衝突之限制,不牴觸 ODbL §4.4d(禁止加入與 ODbL 授權不相容之內容)。
+3. **terrain 含 OSM 衍生成分;其 share-alike 後果未裁定**(round 2 更正——先前版本在此寫「road 以外圖層完全不含 OSM 資料」,該全稱命題對本專案已核准的設計為**誤述**,已刪除):
+   - **D9(一級決策)**:編譯期將 DTM 於**路廊帶內拉齊至道路求解高程**、外緣漸變;編譯順序 roads → terrain(FTP-34 Context)。
+   - **D10**:道路來自 OSM ⊕ 北市道路 GIS 的 conflation,**拓樸(連通性/單行/層級)以 OSM 為準**;**配對失敗段落退回「OSM 中心線 + class 推估寬度」**(FTP-31 Context)。故路廊的位置與範圍本身即由 OSM 幾何界定。
+   - **D3**:道路高程求解另以 OSM `layer` 為相對序約束——惟**此路徑在 M1 尚未生效**:FTP-32(D3 平面子集)的 Out of Scope 明列「橋隧/淨空/**layer 序約束**(M2,Story 6)」。M1 實際生效的是上述兩條 D10 路徑,D3 layer 序為 M2 起的第三條。
+   - **FTP-34 AC** 把此依賴直接寫成驗收條件:「路廊帶內地形高程 = 道路高程(容差)測試」。
+
+   → **terrain tiles 之路廊帶部分含 OSM 衍生成分**。其 share-alike 後果(terrain 是否因此構成 ODbL Derivative Database、整體場景是否仍為 Collective Database)**本票未裁定**,依 FTP-6 `[decision]` 延後(PoC 階段;ODbL 與 OGDL 義務均於**散布時**才觸發)。**重新生效條件:任何編譯產物隨公開站台送出**(含目前已公開的 GitHub Pages test 環境)。
+   → **props 圖層不受此影響**:其來源(data.taipei 路樹/路燈、北市建物輪廓圖資)依 D5 / FTP-35 / FTP-36 確為非 OSM,該圖層之「零 OSM」敘述仍成立(且為仍具拘束力之工程約束,見結論條件 (3))。
+4. **§4.6 存取義務的滿足方式**:road tiles 本身即為機器可讀之 Derivative Database 全量副本,經網際網路免費散布即滿足 §4.6a;另於發布流程保留 conflation 輸出之來源資料庫副本作為備援(FTP-51 落實)。
+5. **義務皆為可執行之工程動作**(標示、附授權連結、保留聲明、免費提供),無不可滿足條款 → **結論:可散布(附條件)**,不觸發「不能散布」之 escalate 條件。
+
+#### Attribution 文字草案
+
+完整版(LICENSING.md / 關於頁;政府資料部分採附件顯名聲明全文格式):
+
+> 道路資料 (c) OpenStreetMap contributors,依 [Open Database License (ODbL) 1.0](https://opendatacommons.org/licenses/odbl/1-0/) 提供;road tiles 為 OSM 與臺北市政府道路資料之衍生資料庫,依 ODbL 1.0 散布。
+> 臺北市政府 [年份] [資料集名稱與版本] 此開放資料依[政府資料開放授權條款-第1版](https://data.gov.tw/license)進行公眾釋出,使用者於遵守本條款各項規定之前提下,得利用之。
+> 內政部 [年份] 內政部20公尺網格數值地形模型資料 此開放資料依[政府資料開放授權條款-第1版](https://data.gov.tw/license)進行公眾釋出,使用者於遵守本條款各項規定之前提下,得利用之。
+> 內政部國土測繪中心 [年份] [圖資名稱與版本] 此開放資料依[政府資料開放授權條款-第1版](https://data.gov.tw/license)進行公眾釋出,使用者於遵守本條款各項規定之前提下,得利用之。(此列對應 **client 端串流之 NLSC 3D Tiles**,非編譯產物來源;實際措辭以 FTP-5 確認之供應方式與服務條款為準)
+
+HUD 短版(FTP-46 使用;點擊導向完整版):
+
+> © OpenStreetMap contributors (ODbL) | 資料:臺北市政府、內政部、國土測繪中心(政府資料開放授權條款第1版)
+
+## 結論
+
+**可散布(附條件)。** road tiles 以 ODbL 1.0 散布(share-alike + §4.2 notices + §4.6 免費全量提供);props tiles(路樹/路燈、建物 physics proxy)依 OGDL v1 附顯名聲明散布;terrain tiles 之**非路廊帶**部分同此,**路廊帶部分之 ODbL 定位未裁定**。整體場景之 Collective Database 定位以「road 以外圖層不含 OSM 衍生成分」為前提,而 terrain 依 D9 不滿足該前提,故 **share-alike 是否外溢至 terrain,本票未裁定**(非「不外溢」,亦非「外溢」)。條件:
+
+1. 顯名標示為失權要件,attribution 必須隨產物與展示介面共同交付(FTP-46/FTP-51),且依 OSMF Attribution Guidelines 之 Databases safe harbour,亦須存在於 tiles 本體(metadata 或同目錄 readme)。
+2. NLSC 3D Tiles 依 **D5 / FTP-39** 為 **client 端串流**,不是編譯產物之來源,故本方案不含 NLSC;其供應方式與服務條款仍待 FTP-5 確認,影響範圍限於 client 端與 attribution 措辭(round 2 更正:先前版本以此為 `LICENSING.md` 定稿之阻礙,係基於「NLSC 為 props 來源」之誤述)。
+3. **terrain 路廊帶含 OSM 衍生成分(D9 ⊕ D10),其 share-alike 後果未裁定,依 FTP-6 `[decision]` 延後;任何編譯產物公開散布前必須先行裁定本項。** 仍然成立的工程約束:**props / 建物 physics proxy 圖層不得引入 OSM 來源資料**(例如改用 OSM 建物輪廓),否則該圖層即成為 ODbL Derivative Database、share-alike 外溢——此約束之實作對象為 **FTP-35 / FTP-36**(props / physics 票),先前版本誤指 FTP-31(road 票)。
+
+方案細節見 [`LICENSING.md`](../../LICENSING.md)。
