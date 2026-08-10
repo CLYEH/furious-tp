@@ -1,11 +1,27 @@
 #!/usr/bin/env node
-// FTP-22 spec exam — round 2 declaration (post Layer 2 REQUEST_CHANGES).
+// FTP-22 spec exam — round 3 declaration (post owner ruling on B-4 / S-3 / S-4).
 // These checks encode the acceptance criteria and the finalized numeric
 // decisions. Run:  node contracts/tests/check_spec.mjs
 //
 // Categories: happy (H*), boundary (B*), error (E*).
 // permissions / concurrency: N/A — pure documentation contract (ticket
 // Verification Steps mark these N/A; no runtime surface exists here).
+//
+// Round 3 strengthening:
+//   - B-4 (blocking): a declared extreme may no longer be an isolated frozen
+//     number. Every figure of the Z budget is DERIVED from recorded evidence
+//     rows, and no piece of evidence in the file — including an anchor's own
+//     `ele=` — may sit above the ceiling the file declares (B15/B16/B17).
+//   - S-3: the corridor survey's containment claims must agree with the
+//     coordinates it records (E19).
+//   - S-4: the 19 mutants that survived the Layer 2 round-2 loop are pinned
+//     (E11-E17): the CRS definition itself, both index formulas and the
+//     interval notation, both dequantization formulas, the closed-interval
+//     h_min, the fail-closed clause, the seam clauses, the local axes, the
+//     geoid sign, and the README version / finalized clause bodies.
+//   - frame_survey is no longer trusted prose: E18 recomputes the rigid-ENU
+//     corner error, the seam gap and the meridian convergence from scratch
+//     and requires the declared figures to be outward bounds of them.
 //
 // Round 2 strengthening (Layer 2 S-2: 15 of 30 mutants survived round 1
 // because prose ACs were checked by section-heading existence only):
@@ -380,7 +396,9 @@ check("B12", "h0 selection rule is executable and keeps q_z in range", () => {
   // execute the rule on the measured worst tile and on adversarial inputs
   const cases = [
     [z.worst_tile_min_h_m, z.worst_tile_min_h_m + z.worst_tile_span_m],
-    [-7, -7 + 320], // bbox extremes measured by the terrain survey
+    // the surveyed bbox extremes, derived — a literal here would decouple the
+    // adversarial case from the measurements it claims to represent
+    [z.bbox_min_h_m, z.bbox_max_h_m],
     [0, 0], // degenerate: flat tile
     [3.0, 3.0 + g.z_quant_max * g.z_step_m], // exactly at the budget
     [-7.0, -7.0 + g.z_quant_max * g.z_step_m], // budget-filling, negative base
@@ -452,6 +470,120 @@ check("B14", "M1 budget table rows agree with constants (tile, span, share)", ()
     const pct = ((value / span) * 100).toFixed(1);
     assert(row.includes(`${pct}%`), `budget row for ${id} must state ${pct}% of the span`);
   }
+});
+
+// --- round 3 additions (Layer 2 B-4: frozen figures must be derived) --------
+
+// Every terrain figure in the budget must be reducible to a recorded sample
+// run. B-4 was possible because `bbox_max_h_m` was an isolated literal: no
+// other field could contradict it, so a coarse-grid extreme could pose as the
+// bbox ceiling while the file's own anchor named a higher point.
+check("B15", "every Z-budget terrain figure is derived from recorded evidence", () => {
+  const z = readJson("constants/m1_area.json").z_budget;
+  const rows = z.terrain_evidence;
+  assert(Array.isArray(rows) && rows.length >= 3, "z_budget needs a terrain_evidence log");
+  for (const r of rows) {
+    assert(typeof r.source === "string" && r.source.length > 0, "evidence row needs a source");
+    assert(
+      Number.isFinite(r.grid_step_m) && r.grid_step_m > 0,
+      `${r.source}: every sample run must state its grid step`,
+    );
+    assert(
+      Number.isInteger(r.samples) && r.samples > 0,
+      `${r.source}: every sample run must state how many points it took`,
+    );
+    assert(
+      Number.isFinite(r.min_h_m) && Number.isFinite(r.max_h_m) && r.max_h_m >= r.min_h_m,
+      `${r.source}: min/max must be finite and ordered`,
+    );
+  }
+  const row = (source, tile) =>
+    rows.find(
+      (r) =>
+        r.source === source &&
+        (tile
+          ? Array.isArray(r.tile) && r.tile[0] === tile[0] && r.tile[1] === tile[1]
+          : r.extent === "bbox"),
+    );
+  // the primary source's densest run on the worst terrain tile defines it
+  const tw = row(z.terrain_source, z.terrain_worst_tile);
+  assert(tw, `no ${z.terrain_source} evidence row for terrain_worst_tile`);
+  assertEq(z.terrain_worst_tile_min_h_m, tw.min_h_m, "terrain_worst_tile_min_h_m");
+  assertEq(z.terrain_worst_tile_max_h_m, tw.max_h_m, "terrain_worst_tile_max_h_m");
+  assertEq(
+    z.terrain_worst_relief_m,
+    Number((tw.max_h_m - tw.min_h_m).toFixed(6)),
+    "terrain_worst_relief_m must equal the recorded tile max - min",
+  );
+  // the cross-check figure must come from a genuinely different source
+  const cross = rows.find(
+    (r) =>
+      r.source !== z.terrain_source &&
+      Array.isArray(r.tile) &&
+      r.tile[0] === z.terrain_worst_tile[0] &&
+      r.tile[1] === z.terrain_worst_tile[1],
+  );
+  assert(cross, "the relief cross-check must name a second source for the same tile");
+  assertEq(
+    z.terrain_worst_relief_crosscheck_m,
+    Number((cross.max_h_m - cross.min_h_m).toFixed(6)),
+    "terrain_worst_relief_crosscheck_m must equal the second source's max - min",
+  );
+  // ...and the declared worst tile must actually be the worst one on record
+  for (const r of rows) {
+    if (r.source !== z.terrain_source || !Array.isArray(r.tile)) continue;
+    assert(
+      r.max_h_m - r.min_h_m <= z.terrain_worst_relief_m + 1e-9,
+      `tile ${r.tile} has relief ${r.max_h_m - r.min_h_m} m, above the declared worst`,
+    );
+  }
+  // the ground floor of the overall worst tile is evidence too, not a guess
+  const wt = row(z.terrain_source, z.worst_tile);
+  assert(wt, `no ${z.terrain_source} evidence row for worst_tile`);
+  assertEq(z.worst_tile_min_h_m, wt.min_h_m, "worst_tile_min_h_m");
+});
+
+check("B16", "the declared bbox extremes are the envelope of all evidence", () => {
+  const m = readJson("constants/m1_area.json");
+  const z = m.z_budget;
+  const eles = m.anchors
+    .map((a) => /\bele=([0-9]+(?:\.[0-9]+)?)/.exec(a.note || ""))
+    .filter(Boolean)
+    .map((hit) => Number(hit[1]));
+  // reviewer fixture A: no anchor may name a point above the declared ceiling
+  for (const [i, e] of eles.entries()) {
+    assert(
+      e <= z.bbox_max_h_m,
+      `an anchor declares ele=${e} m, above bbox_max_h_m ${z.bbox_max_h_m} m (anchor #${i})`,
+    );
+  }
+  const maxes = z.terrain_evidence.map((r) => r.max_h_m).concat(eles);
+  const mins = z.terrain_evidence.map((r) => r.min_h_m);
+  assertEq(z.bbox_max_h_m, Math.max(...maxes), "bbox_max_h_m must be the max of all evidence");
+  assertEq(z.bbox_min_h_m, Math.min(...mins), "bbox_min_h_m must be the min of all evidence");
+  // a sampled extreme is a bound, not a truth — the file has to say so
+  assert(
+    typeof z.extremes_semantics === "string" && /下界|包絡/.test(z.extremes_semantics),
+    "z_budget must state that sampled extremes are bounds, not exact ceilings",
+  );
+});
+
+check("B17", "the worst tile's span is backed by a named structure record", () => {
+  const z = readJson("constants/m1_area.json").z_budget;
+  const s = z.tallest_structure;
+  assert(s && Number.isFinite(s.height_m), "z_budget needs a tallest_structure record");
+  assert(/\bway\/[0-9]+/.test(s.source), "the structure must cite its OSM object id");
+  assertEq(s.tile, z.worst_tile, "the tallest structure must sit in the declared worst tile");
+  assert(
+    Number.isFinite(s.second_tallest_m) && s.second_tallest_m < s.height_m,
+    "the runner-up must be recorded and lower — otherwise 'tallest' is unchecked",
+  );
+  // span = structure height above the tile floor; the floor is the tile min,
+  // so the span can never be below the structure's own height
+  assert(
+    z.worst_tile_span_m >= s.height_m,
+    `worst_tile_span_m ${z.worst_tile_span_m} is below the tallest structure ${s.height_m} m`,
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -722,6 +854,333 @@ check("E10", "geoid_offset_m is declared a pending measurement, not an estimate"
     md.includes("不得將 `geoid_offset_m` 視為已知量"),
     "grid.md must forbid treating the unmeasured offset as known",
   );
+});
+
+// --- round 3 additions: pin the 19 clauses that survived the round-2 loop ----
+// Every assertion below quotes a clause an AC explicitly requires. The shipped
+// text is correct today; these exist so it cannot drift silently tomorrow.
+
+check("E11", "the CRS definition itself is pinned (Z01-Z04)", () => {
+  const md = readText("spec/grid.md");
+  // the exam's own from-scratch projection uses these four parameters; if the
+  // doc and the implementation disagree, one of them is wrong by definition
+  for (const [lit, what] of [
+    ["中央經線 121°E", "central meridian"],
+    ["k0 = 0.9999", "scale factor"],
+    ["假東距 250 000 m", "false easting"],
+    ["假北距 0 m", "false northing"],
+    ["a = 6378137", "GRS80 semi-major axis"],
+    ["1/f = 298.257222101", "GRS80 inverse flattening"],
+  ]) {
+    assert(md.includes(lit), `grid.md must state the ${what} as 「${lit}」`);
+  }
+  assert(md.includes("EPSG:3826(TWD97 / TM2 zone 121)"), "the CRS must be named in full");
+});
+
+check("E12", "AC2 index formulas and interval notation are pinned (S10b/S10c)", () => {
+  const md = readText("spec/grid.md");
+  assert(md.includes("tx = floor(E / tile_size_m)"), "the E index formula is not pinned");
+  assert(md.includes("ty = floor(N / tile_size_m)"), "the N index formula is not pinned");
+  assert(!/\b(ceil|round)\((?:E|N) \/ tile_size_m\)/.test(md), "index formula must use floor");
+  // min-inclusive / max-exclusive stated as prose AND as interval notation
+  assert(
+    md.includes("E ∈ [tx · tile_size_m, (tx + 1) · tile_size_m)"),
+    "the E range must be written half-open, min-inclusive",
+  );
+  assert(
+    md.includes("N ∈ [ty · tile_size_m, (ty + 1) · tile_size_m)"),
+    "the N range must be written half-open, min-inclusive",
+  );
+  assert(
+    !/∈ \((?:tx|ty) ·/.test(md),
+    "an open-lower interval contradicts the min-inclusive boundary rule",
+  );
+});
+
+check("E13", "AC3 quantization formulas, ranges, axes and rounding are pinned", () => {
+  const md = readText("spec/grid.md");
+  const g = readJson("constants/grid.json");
+  // dequantization: the divisor is q_max, not q_max + 1 (Z05)
+  assert(
+    md.includes("x = q · tile_size_m / xy_quant_max"),
+    "the XY dequantization formula is not pinned",
+  );
+  assert(
+    md.includes("q = round(x / tile_size_m · xy_quant_max)"),
+    "the XY quantization formula is not pinned",
+  );
+  assert(
+    !/xy_quant_max \+ 1|\(xy_quant_max ?\+ ?1\)/.test(md),
+    "XY dequantization must not divide by xy_quant_max + 1",
+  );
+  // Z dequantization: no half-step offset (Z06)
+  assert(md.includes("h = h0 + q_z · z_step_m"), "the Z dequantization formula is not pinned");
+  assert(md.includes("q_z = round((h - h0) / z_step_m)"), "the Z quantization formula is not pinned");
+  assert(!/q_z \+ 0\.5|\(q_z ?\+ ?0\.5\)/.test(md), "Z dequantization must not offset by half a step");
+  // the quantized range and what it maps onto (Z12/Z15)
+  assert(
+    md.includes(`量化值 q ∈ [0, ${g.xy_quant_max}] 對應 local 座標 [0, tile_size_m]`),
+    "the XY quantized range and its image are not pinned",
+  );
+  assert(
+    md.includes(`\`xy_quant_max = ${g.xy_quant_max}\`(16-bit)`),
+    "xy_quant_max must be stated as a 16-bit value",
+  );
+  assert(
+    md.includes(`\`z_quant_max\` = ${g.z_quant_max}(16-bit)`),
+    "z_quant_max must be stated as a 16-bit value",
+  );
+  // h_min is taken over the CLOSED tile, boundaries included (Z07)
+  assert(
+    md.includes("**閉區間**(含四條邊界)"),
+    "h_min must be taken over the closed tile — an open interval lets a boundary vertex go below h0",
+  );
+  // local axes (Z10)
+  assert(/local X = E [−-] E0\(向東\)/.test(md), "the local X axis is not pinned to east");
+  assert(/local Y = N [−-] N0\(向北\)/.test(md), "the local Y axis is not pinned to north");
+  assert(/local Z = h [−-] h0\(向上\)/.test(md), "the local Z axis is not pinned to up");
+  // rounding convention (S13b): only one convention may appear anywhere
+  assert(/round half up/.test(md), "the rounding convention is not stated");
+  assert(
+    !/round (half (down|even)|toward zero|toward -?infinity)|無條件(捨去|進位)/.test(md),
+    "a second, contradictory rounding convention appears",
+  );
+});
+
+check("E14", "the over-budget tile clause stays fail-closed (Z08)", () => {
+  const md = readText("spec/grid.md");
+  assert(
+    md.includes("pipeline 必須失敗並回報,不得截斷或改用 per-tile 縮放"),
+    "the fail-closed clause for over-budget tiles was weakened or removed",
+  );
+  assert(
+    /超出者為\*\*不合規 tile\*\*/.test(md),
+    "an over-budget tile must be labelled non-compliant, not merely discouraged",
+  );
+  assert(
+    !/(應|建議)(盡量)?(避免|減少)截斷/.test(md),
+    "a 'should avoid truncating' reading must not exist alongside the must-fail rule",
+  );
+});
+
+check("E15", "the geoid offset is applied with the declared sign (Z11)", () => {
+  const md = readText("spec/grid.md");
+  assert(md.includes("h_ellip = h + geoid_offset_m"), "the geoid offset sign convention is not pinned");
+  assert(!/h_ellip = h - geoid_offset_m/.test(md), "the geoid offset must be added, not subtracted");
+  assert(
+    md.includes("(= 正高 + `geoid_offset_m`"),
+    "the ECEF table must restate the same sign for its h column",
+  );
+});
+
+check("E16", "the seam clauses keep their normative force (Z09/Z16)", () => {
+  const md = readText("spec/grid.md");
+  const seam = md.split("## 接縫規則")[1] ?? "";
+  assert(
+    seam.includes("邊界頂點在相鄰兩 tile 中各自出現"),
+    "the boundary vertex must be duplicated into BOTH tiles",
+  );
+  assert(
+    !/只(在|由)索引較(小|大)的 tile/.test(seam),
+    "assigning a boundary vertex to one side only breaks the duplication rule",
+  );
+  assert(
+    seam.includes("**必須為 `z_step_m` 的整數倍**"),
+    "clause 3 must require (not recommend) boundary heights on the global step",
+  );
+  assert(
+    !/(建議|宜|應盡量)為 `z_step_m` 的整數倍/.test(seam),
+    "clause 3 was softened from a requirement to a recommendation",
+  );
+  // the snap must name its rounding direction, or two pipelines can disagree
+  assert(/snap 採 round half up/.test(seam), "clause 3 must state the snap rounding direction");
+});
+
+check("E17", "README version policy and finalized clause bodies are pinned (Z13/Z14)", () => {
+  const md = readText("README.md");
+  assert(
+    md.includes("pre-1.0:**minor** 版本遞增可變更數值或語意"),
+    "the pre-1.0 policy must keep value/semantic changes at minor, not patch",
+  );
+  assert(
+    md.includes("**patch** 僅限訂正文字、不改變任何數值與語意"),
+    "the patch policy body is not pinned",
+  );
+  assert(
+    md.includes("合併後不得原地修改既有版本的數值或語意"),
+    "the merge = finalized clause body was inverted or removed",
+  );
+  assert(
+    !/合併後(可|得)原地修改/.test(md),
+    "a clause permitting in-place edits contradicts merge = finalized",
+  );
+});
+
+// From-scratch ENU placement, so the frame_survey figures are checkable
+// offline instead of being trusted prose.
+function enuBasis(lonDeg, latDeg) {
+  const lo = (lonDeg * Math.PI) / 180;
+  const la = (latDeg * Math.PI) / 180;
+  return {
+    east: [-Math.sin(lo), Math.cos(lo), 0],
+    north: [-Math.sin(la) * Math.cos(lo), -Math.sin(la) * Math.sin(lo), Math.cos(la)],
+  };
+}
+function perVertex(E, N) {
+  const r = epsg3826ToEcef(E, N, 0);
+  return [r.x, r.y, r.z];
+}
+function rigidEnu(tx, ty, x, y, s) {
+  const o = epsg3826ToEcef(tx * s, ty * s, 0);
+  const b = enuBasis(o.lonDeg, o.latDeg);
+  return [
+    o.x + x * b.east[0] + y * b.north[0],
+    o.y + x * b.east[1] + y * b.north[1],
+    o.z + x * b.east[2] + y * b.north[2],
+  ];
+}
+const dist3 = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+
+check("E18", "frame_survey figures are outward bounds of an independent recomputation", () => {
+  const m = readJson("constants/m1_area.json");
+  const s = readJson("constants/grid.json").tile_size_m;
+  const fs = m.frame_survey;
+  const txs = [];
+  for (let tx = m.bbox.e_min / s; tx < m.bbox.e_max / s; tx += 1) txs.push(tx);
+  const tys = [];
+  for (let ty = m.bbox.n_min / s; ty < m.bbox.n_max / s; ty += 1) tys.push(ty);
+
+  // 1) meridian convergence over the bbox
+  let cMin = Infinity;
+  let cMax = -Infinity;
+  for (let i = 0; i <= 14; i += 1) {
+    for (let j = 0; j <= 14; j += 1) {
+      const E = m.bbox.e_min + ((m.bbox.e_max - m.bbox.e_min) * i) / 14;
+      const N = m.bbox.n_min + ((m.bbox.n_max - m.bbox.n_min) * j) / 14;
+      const { lonDeg, latDeg } = epsg3826ToGeodetic(E, N);
+      const gamma =
+        (Math.atan(
+          Math.tan(((lonDeg - 121) * Math.PI) / 180) * Math.sin((latDeg * Math.PI) / 180),
+        ) *
+          180) /
+        Math.PI;
+      cMin = Math.min(cMin, gamma);
+      cMax = Math.max(cMax, gamma);
+    }
+  }
+  assert(
+    fs.meridian_convergence_deg_min <= cMin && fs.meridian_convergence_deg_max >= cMax,
+    `declared convergence [${fs.meridian_convergence_deg_min}, ${fs.meridian_convergence_deg_max}] ` +
+      `does not bound the recomputed [${cMin.toFixed(6)}, ${cMax.toFixed(6)}]`,
+  );
+  assert(
+    cMax - cMin > 0 && fs.meridian_convergence_deg_max <= cMax * 1.01,
+    "the declared convergence bound is inflated far beyond the measurement",
+  );
+
+  // 2) rigid-ENU corner error: worst tile corner over the whole bbox
+  let corner = 0;
+  let cornerTile = null;
+  for (const tx of txs) {
+    for (const ty of tys) {
+      for (const [x, y] of [
+        [0, 0],
+        [s, 0],
+        [0, s],
+        [s, s],
+      ]) {
+        const d = dist3(rigidEnu(tx, ty, x, y, s), perVertex(tx * s + x, ty * s + y));
+        if (d > corner) {
+          corner = d;
+          cornerTile = [tx, ty];
+        }
+      }
+    }
+  }
+  assert(
+    fs.rigid_enu_corner_error_m >= corner && fs.rigid_enu_corner_error_m <= corner * 1.01,
+    `declared corner error ${fs.rigid_enu_corner_error_m} m is not a tight outward bound of ` +
+      `the recomputed ${corner.toFixed(4)} m`,
+  );
+  assertEq(fs.rigid_enu_corner_error_worst_tile, cornerTile, "corner-error worst tile");
+
+  // 3) seam gap: the same shared-edge point placed by each neighbour
+  let gap = 0;
+  let gapPair = null;
+  for (const tx of txs) {
+    for (const ty of tys) {
+      for (let k = 0; k <= 10; k += 1) {
+        const t = (s * k) / 10;
+        if (txs.includes(tx + 1)) {
+          const d = dist3(rigidEnu(tx, ty, s, t, s), rigidEnu(tx + 1, ty, 0, t, s));
+          if (d > gap) {
+            gap = d;
+            gapPair = [
+              [tx, ty],
+              [tx + 1, ty],
+            ];
+          }
+        }
+        if (tys.includes(ty + 1)) {
+          const d = dist3(rigidEnu(tx, ty, t, s, s), rigidEnu(tx, ty + 1, t, 0, s));
+          if (d > gap) {
+            gap = d;
+            gapPair = [
+              [tx, ty],
+              [tx, ty + 1],
+            ];
+          }
+        }
+      }
+    }
+  }
+  assert(
+    fs.rigid_enu_seam_gap_m >= gap && fs.rigid_enu_seam_gap_m <= gap * 1.01,
+    `declared seam gap ${fs.rigid_enu_seam_gap_m} m is not a tight outward bound of ` +
+      `the recomputed ${gap.toFixed(4)} m`,
+  );
+  assertEq(fs.rigid_enu_seam_gap_worst_pair, gapPair, "seam-gap worst pair");
+  // both figures must be global extremes of the same bbox, stated as such —
+  // mixing "one sampled pair" with "the maximum" is what made them incomparable
+  assert(
+    typeof fs.bounds_convention === "string" && /極值|向外取整/.test(fs.bounds_convention),
+    "frame_survey must state its sampling and rounding convention",
+  );
+});
+
+check("E19", "corridor survey containment claims match its own coordinates (S-3)", () => {
+  const m = readJson("constants/m1_area.json");
+  const c = m.corridor_survey;
+  const r = c.relaxed;
+  assert(r && Number.isFinite(r.run_m), "corridor_survey needs a recorded relaxed-tolerance run");
+  assert(
+    r.chord_tolerance_m > c.chord_tolerance_m,
+    "the relaxed variant must actually relax the straightness tolerance",
+  );
+  assert(
+    r.run_m > c.straight_run_m,
+    "relaxing the tolerance can only lengthen the run — a shorter one means a different method",
+  );
+  assert(
+    c.straight_run_along_m >= c.straight_run_m,
+    "the along-polyline length cannot be shorter than the chord",
+  );
+  // the claim about the bbox must agree with the coordinate it is based on
+  const inside = r.west_end_e >= m.bbox.e_min && r.west_end_e < m.bbox.e_max;
+  assertEq(r.west_end_inside_bbox, inside, "west_end_inside_bbox vs the recorded easting");
+  if (inside) {
+    assert(
+      !/越出 bbox|越界|超出 bbox/.test(c.survey + (r.note || "")),
+      "the survey claims the relaxed run leaves the bbox while its own easting is inside",
+    );
+  }
+  // the prose must cite the numbers the fields record, so the two cannot drift
+  for (const lit of [c.straight_run_m, r.run_m]) {
+    assert(
+      new RegExp(`(?<![0-9.])${String(lit).replace(/\./g, "\\.")}(?![0-9])`).test(c.survey),
+      `corridor survey text must cite ${lit} m`,
+    );
+  }
 });
 
 // ---------------------------------------------------------------------------
