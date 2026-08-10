@@ -1152,35 +1152,46 @@ check("E19", "corridor survey containment claims match its own coordinates (S-3)
   const m = readJson("constants/m1_area.json");
   const c = m.corridor_survey;
   const r = c.relaxed;
-  assert(r && Number.isFinite(r.run_m), "corridor_survey needs a recorded relaxed-tolerance run");
+  assert(r && r.bbox_limited && r.unlimited, "corridor_survey needs both relaxed variants on record");
   assert(
     r.chord_tolerance_m > c.chord_tolerance_m,
     "the relaxed variant must actually relax the straightness tolerance",
   );
   assert(
-    r.run_m > c.straight_run_m,
-    "relaxing the tolerance can only lengthen the run — a shorter one means a different method",
-  );
-  assert(
     c.straight_run_along_m >= c.straight_run_m,
     "the along-polyline length cannot be shorter than the chord",
   );
-  // the claim about the bbox must agree with the coordinate it is based on
-  const inside = r.west_end_e >= m.bbox.e_min && r.west_end_e < m.bbox.e_max;
-  assertEq(r.west_end_inside_bbox, inside, "west_end_inside_bbox vs the recorded easting");
-  if (inside) {
-    assert(
-      !/越出 bbox|越界|超出 bbox/.test(c.survey + (r.note || "")),
-      "the survey claims the relaxed run leaves the bbox while its own easting is inside",
-    );
+  // relaxing the tolerance, then dropping the bbox restriction, can only ever
+  // lengthen the run; a violation means the three numbers came from different
+  // methods and cannot be compared — which is how S-3's 2314.6 m got in
+  assert(
+    r.unlimited.run_m >= r.bbox_limited.run_m && r.bbox_limited.run_m > c.straight_run_m,
+    `runs must grow with the relaxation: ${c.straight_run_m} < ${r.bbox_limited.run_m} <= ` +
+      `${r.unlimited.run_m}`,
+  );
+  const inBbox = (e) => e >= m.bbox.e_min && e < m.bbox.e_max;
+  // every recorded end must be inside the bbox exactly when the file says so...
+  assertEq(inBbox(c.west_end_e) && inBbox(c.east_end_e), true, "the adopted run must lie in the bbox");
+  for (const [label, v] of Object.entries({ bbox_limited: r.bbox_limited, unlimited: r.unlimited })) {
+    assert(v.along_m >= v.run_m, `${label}: along-polyline length below the chord`);
+    assertEq(v.west_end_inside_bbox, inBbox(v.west_end_e), `${label}.west_end_inside_bbox`);
+    // ...and the prose sentence that carries this variant's number must make
+    // the same containment claim as the coordinate does
+    const sentences = c.survey.split("。").filter((s) => s.includes(String(v.run_m)));
+    assert(sentences.length > 0, `corridor survey text must cite ${label} run ${v.run_m} m`);
+    for (const s of sentences) {
+      const saysOutside = /(越出|越界|超出|不在).{0,8}bbox|bbox.{0,8}(之外|以外)/.test(s);
+      assert(
+        saysOutside === !v.west_end_inside_bbox,
+        `${label}: the text ${saysOutside ? "claims" : "does not claim"} the run leaves the bbox, ` +
+          `but its west end E ${v.west_end_e} is ${v.west_end_inside_bbox ? "inside" : "outside"}`,
+      );
+    }
   }
-  // the prose must cite the numbers the fields record, so the two cannot drift
-  for (const lit of [c.straight_run_m, r.run_m]) {
-    assert(
-      new RegExp(`(?<![0-9.])${String(lit).replace(/\./g, "\\.")}(?![0-9])`).test(c.survey),
-      `corridor survey text must cite ${lit} m`,
-    );
-  }
+  assert(
+    new RegExp(`(?<![0-9.])${String(c.straight_run_m).replace(/\./g, "\\.")}(?![0-9])`).test(c.survey),
+    `corridor survey text must cite the adopted run ${c.straight_run_m} m`,
+  );
 });
 
 // ---------------------------------------------------------------------------
