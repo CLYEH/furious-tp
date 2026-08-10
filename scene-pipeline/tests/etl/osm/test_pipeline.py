@@ -112,9 +112,32 @@ def test_real_tunnel_keeps_its_tunnel_and_layer(m1_run) -> None:
     assert any(w["tunnel"] and w["layer"] == -1 for w in tunnels)
 
 
-def test_real_bridge_flag_survives(m1_run) -> None:
+def test_every_bridge_in_the_fixture_is_pedestrian_and_therefore_absent(m1_run) -> None:
+    # Ground truth, recounted from the frozen fixture: all 23 `bridge` ways in
+    # it are footway/steps — pedestrian overpasses — so the drivable network
+    # correctly contains none. (The exam first asserted the opposite, from the
+    # all-highway count; the count was wrong, not the filter.) The end-to-end
+    # proof that a drivable bridge does survive is the staged case below.
     _result, doc = m1_run
-    assert any(w["bridge"] for w in doc["ways"])
+    assert not any(w["bridge"] for w in doc["ways"])
+
+
+def test_bridge_and_tunnel_flags_survive_the_whole_etl(tmp_path) -> None:
+    # AC3 for `bridge`, staged because the frozen fixture has no drivable
+    # bridge: a viaduct on layer 1 must arrive with both facts intact, or M2's
+    # grade separation has nothing to separate on.
+    path = write_projected_osm(
+        tmp_path / "bridge.osm",
+        [(1, 307100.0, 2769600.0), (2, 307200.0, 2769600.0), (3, 307300.0, 2769650.0)],
+        [
+            (10, [1, 2], {"highway": "primary", "bridge": "viaduct", "layer": "1"}),
+            (11, [2, 3], {"highway": "primary", "tunnel": "building_passage", "layer": "-1"}),
+        ],
+    )
+    result = run_osm_etl(str(path), tmp_path / "osm", TILE)
+    ways = {w["osm_id"]: w for w in load(result.output_path)["ways"]}
+    assert (ways[10]["bridge"], ways[10]["tunnel"], ways[10]["layer"]) == (True, False, 1)
+    assert (ways[11]["bridge"], ways[11]["tunnel"], ways[11]["layer"]) == (False, True, -1)
 
 
 def test_oneway_values_are_normalised(m1_run) -> None:
