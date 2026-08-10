@@ -370,7 +370,9 @@ async function modeIntegrity(config, findings) {
         lastModified: samples[0]?.lastModified ?? null,
         cacheControl: samples[0]?.cacheControl ?? null,
         decodedBodySha256: bodyHashes,
-        bodyStableAcrossSamples: bodyHashes.length <= 1,
+        // null, not `true`: with nothing decodable there is no evidence either
+        // way, and "stable" would be a comforting lie.
+        bodyStableAcrossSamples: bodyHashes.length === 0 ? null : bodyHashes.length === 1,
       },
     },
     exitOnDefect: defects.length > 0,
