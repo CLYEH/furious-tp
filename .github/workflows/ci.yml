@@ -40,14 +40,26 @@ jobs:
             changed="$(cat)"
             docs_only="$(printf '%s\n' "$changed" | sh .github/profile.sh)"
 
-            # IMPLEMENTATION PENDING (FTP-53 declaration commit): this is
-            # today's develop behaviour verbatim — gates on NOT docs-only,
-            # docs on docs-only, and no Python routing whatsoever. The exam
-            # below is frozen against the TARGET behaviour, so the cases
-            # covering the two known holes are red until the next commit.
+            # npm gates: the docs-only reduction, unchanged.
             if [ "$docs_only" = true ]; then gates=false; else gates=true; fi
-            docs="$docs_only"
-            py=false
+
+            # Markdown: ANY changed *.md is linted. docs-only is not a
+            # precondition — that was the hole that let a PR mixing .md with
+            # non-.md files (contracts/) skip markdown lint entirely. The
+            # docs-only arm is kept so a docs-only PR carrying no .md at all
+            # (e.g. only docs/*.png) still gets the reduced set it gets today.
+            if printf '%s\n' "$changed" | grep -qE '\.md$'; then md=true; else md=false; fi
+            if [ "$md" = true ] || [ "$docs_only" = true ]; then docs=true; else docs=false; fi
+
+            # Python: changes under scene-pipeline/ get ruff + pytest, unless
+            # the PR is docs-only — a README-only change is not a code change,
+            # and a docs-only PR must not pay for the Python toolchain.
+            if printf '%s\n' "$changed" | grep -qE '^scene-pipeline/'; then
+              pipeline=true
+            else
+              pipeline=false
+            fi
+            if [ "$pipeline" = true ] && [ "$docs_only" = false ]; then py=true; else py=false; fi
 
             echo "gates=$gates docs=$docs python=$py"
           }
@@ -156,6 +168,27 @@ jobs:
       - run: npm run typecheck
       - run: npm run build
       - run: npm run test
+
+  # scene-pipeline/ gates (FTP-53). Python version is the floor declared by
+  # scene-pipeline/pyproject.toml (requires-python = ">=3.11", ruff
+  # target-version = "py311"); the install and check steps are the ones
+  # scene-pipeline/README.md prescribes, so CI and the README cannot drift.
+  python:
+    needs: profile
+    if: needs.profile.outputs.run_python == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: scene-pipeline
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e ".[dev]"
+      - run: ruff check .
+      - run: pytest
 
   docs:
     needs: profile
