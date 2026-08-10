@@ -1,0 +1,181 @@
+{
+  "spec_version": "0.1.0",
+  "crs": "EPSG:3826",
+  "bbox": {
+    "e_min": 305500,
+    "e_max": 309000,
+    "n_min": 2767500,
+    "n_max": 2771000
+  },
+  "geoid_offset_m": 0.0,
+  "anchor_tolerance_m": 1.0,
+  "rationale": "M1 信義計畫區 bbox:由 WGS84 規劃範圍 lon [121.5540, 121.5820]、lat [25.0180, 25.0450] 投影至 EPSG:3826 後外擴貼齊 500 m tile 網格,得 7×7 = 49 tiles(3.5 × 3.5 km)。範圍涵蓋 D6 M1 路線三型:(1) 高密度建物 — 信義計畫區核心(台北101、臺北市政府周邊,bbox 內帶高度或樓層標記的建物逾 3300 棟);(2) 高速長直線 — 信義路五段實測連續直線段 1071.6 m(對弦垂距 <= 2.0 m),自基隆路口東側起;(3) off-road — 象山自然步道與拇指山稜線坡地(以 way centroid 落在 bbox 判定,實測 highway=steps 逾 350 條)。錨點座標與各 survey 區塊的見證數字皆為 2026-08-10 實測值,非估計:錨點的 epsg3826 與 approx_wgs84 是同一點的兩種表示,其一致性由 exam E8 以獨立投影實作驗算,容差 anchor_tolerance_m。OSM 為活資料,建物計數等點值會隨編輯漂移(2026-08-10 兩次獨立計數為 3314 / 3315),故凡計數類宣稱一律以下界表述。",
+  "anchors": [
+    {
+      "name": "台北101",
+      "role": "dense_urban",
+      "epsg3826": [306970, 2769656],
+      "approx_wgs84": [121.564544, 25.033944],
+      "note": "OSM way/1159328965 building height=508 m;bbox 內最高結構,決定 tile (613, 5539) 的 Z 預算"
+    },
+    {
+      "name": "臺北市政府",
+      "role": "dense_urban",
+      "epsg3826": [306961, 2770052],
+      "approx_wgs84": [121.564471, 25.037519],
+      "note": "市府街廓;高密度建物型第二見證點"
+    },
+    {
+      "name": "信義路五段直線段西端",
+      "role": "high_speed_straight",
+      "epsg3826": [306502, 2769559],
+      "approx_wgs84": [121.559903, 25.033085],
+      "note": "實測直線段西端;本欄為整數化座標,距實測端點 (306502.4, 2769558.8) 0.45 m、距 OSM 信義路主線中心線 0.18 m;位於基隆路口最西節點(E 306459.6)東側 42.8 m"
+    },
+    {
+      "name": "信義路五段直線段東端",
+      "role": "high_speed_straight",
+      "epsg3826": [307574, 2769539],
+      "approx_wgs84": [121.570524, 25.032865],
+      "note": "實測直線段東端;本欄為整數化座標,距實測端點 (307573.8, 2769538.9) 0.22 m、距中心線 0.09 m;再往東 OSM 主線轉北,故直線宣稱止於此"
+    },
+    {
+      "name": "象山自然步道(主線)入口段",
+      "role": "off_road",
+      "epsg3826": [307740, 2768915],
+      "approx_wgs84": [121.572143, 25.027225],
+      "note": "位於 OSM 具名步道 象山自然步道(主線)way/136815854 上,距最近步道節點 8.86 m;非步道起點 —— 主線接合鏈起點在西側 143.1 m 處 (307597.5, 2768928.5)。off-road 進入點"
+    },
+    {
+      "name": "拇指山",
+      "role": "off_road",
+      "epsg3826": [308976, 2768179],
+      "approx_wgs84": [121.584359, 25.020533],
+      "note": "OSM node/1513906964 natural=peak ele=319.78;bbox 內最高的具名山峰(南港山 373.93 / 九五峰 370.87 皆在 bbox 東界之外),位於地形起伏最大的 tile (617, 5536)"
+    }
+  ],
+  "z_budget": {
+    "worst_tile": [613, 5539],
+    "worst_tile_min_h_m": 3.0,
+    "worst_tile_span_m": 508.0,
+    "driver": "台北101(OSM height=508 m,該 tile 地表最低點實測 3.0 m)",
+    "tallest_structure": {
+      "source": "OSM way/1159328965",
+      "name": "台北101",
+      "height_m": 508.0,
+      "tile": [613, 5539],
+      "second_tallest_name": "南山廣場",
+      "second_tallest_m": 273.0
+    },
+    "terrain_source": "SRTM30m",
+    "terrain_worst_tile": [617, 5536],
+    "terrain_worst_tile_min_h_m": 75.0,
+    "terrain_worst_tile_max_h_m": 316.0,
+    "terrain_worst_relief_m": 241.0,
+    "terrain_worst_relief_crosscheck_m": 251.0,
+    "terrain_evidence": [
+      {
+        "source": "SRTM30m",
+        "extent": "bbox",
+        "grid_step_m": 100,
+        "samples": 1296,
+        "min_h_m": -7.0,
+        "max_h_m": 313.0
+      },
+      {
+        "source": "SRTM30m",
+        "extent": "tile",
+        "tile": [617, 5536],
+        "grid_step_m": 25,
+        "samples": 441,
+        "min_h_m": 75.0,
+        "max_h_m": 316.0
+      },
+      {
+        "source": "SRTM30m",
+        "extent": "tile",
+        "tile": [617, 5537],
+        "grid_step_m": 25,
+        "samples": 441,
+        "min_h_m": 87.0,
+        "max_h_m": 303.0
+      },
+      {
+        "source": "SRTM30m",
+        "extent": "tile",
+        "tile": [613, 5539],
+        "grid_step_m": 25,
+        "samples": 441,
+        "min_h_m": 3.0,
+        "max_h_m": 57.0
+      },
+      {
+        "source": "ASTER30m",
+        "extent": "tile",
+        "tile": [617, 5536],
+        "grid_step_m": 25,
+        "samples": 441,
+        "min_h_m": 85.0,
+        "max_h_m": 336.0
+      },
+      {
+        "source": "ASTER30m",
+        "extent": "tile",
+        "tile": [617, 5537],
+        "grid_step_m": 25,
+        "samples": 441,
+        "min_h_m": 90.0,
+        "max_h_m": 332.0
+      }
+    ],
+    "bbox_min_h_m": -7.0,
+    "bbox_max_h_m": 336.0,
+    "extremes_semantics": "bbox_min_h_m / bbox_max_h_m 是 terrain_evidence 各列與錨點 ele 的包絡(min / max),不是任何單一次取樣的結果。取樣式 DEM 的極值本身即為下界:同一區域 100 m 粗網格量到 313.0 m,加密到 25 m 就升到 316.0 m,而檔內錨點 拇指山 的 OSM 實測峰頂為 319.78 m;兩個來源之間也存在系統性差異(本區 ASTER30m 較 SRTM30m 高約 20 m)。故此欄取跨來源、跨解析度的最大值作為保守側,真實天花板只會更高,由 required_margin_factor 承接。exam B16 由 terrain_evidence 與錨點導出此包絡:任何一列證據或任何錨點 ele 高過宣告值,即為缺陷。",
+    "required_margin_factor": 1.5,
+    "survey": "地形:opentopodata 取樣,主來源為 terrain_source(SRTM30m),ASTER30m 為第二來源交叉檢核;每一次取樣的範圍、網格步長與點數逐列記於 terrain_evidence(全 bbox 100 m 網格 1296 點;起伏最大的兩個 tile 與台北101 所在 tile 再以 25 m 網格各 441 點加密)。地表以上幾何:OSM 帶 height / building:levels 之建物,取最高者(見 tallest_structure)與其 tile 地表最低點相加;此處假設 101 基座即該 tile 最低點 3.0 m,若基座更高則真實跨距更大,同樣由 required_margin_factor 承接。量測日期 2026-08-10(round 3 全部重測,未沿用他人數據)。注意:worst_tile_span_m 與所有地形極值均為下界 —— 30 m DEM 會低估峰頂與真實起伏,本專案實際使用的內政部 20 m DTM 解析度更高,故 required_margin_factor 不得低於 1.5。"
+  },
+  "frame_survey": {
+    "meridian_convergence_deg_min": 0.2325,
+    "meridian_convergence_deg_max": 0.2476,
+    "rigid_enu_corner_error_m": 3.03,
+    "rigid_enu_corner_error_worst_tile": [617, 5541],
+    "rigid_enu_seam_gap_m": 2.142,
+    "rigid_enu_seam_gap_worst_pair": [[617, 5540], [617, 5541]],
+    "bounds_convention": "本區塊四個數字皆為本 bbox 49 個 tile 的全域極值,並向外取整(min 向下、max 向上)至所示位數,故恆為安全側:任何獨立重算得到的點值都必須落在宣告區間之內。exam E18 以考卷自帶的 from-scratch 投影實作重算三個量並檢查此性質。兩個長度量因此採同一取樣約定 —— round 2 曾一個取全域最大值、另一個取單一 tile 對的實測值,兩者不可比。",
+    "survey": "以 pyproj 3.6.1 / PROJ 9.3.1 比對兩種擺放方式對同一頂點的 ECEF 結果:(a) 規範性轉換鏈逐頂點施加;(b) 以 tile 原點的 ENU 切平面作單一剛體變換擺放整塊 tile。角落偏差窮舉 49 tiles × 4 角落取最大,實測 3.02939 m(tile (617, 5541) 的 local (500, 500));裂縫取所有相鄰 tile 對的共用邊、每邊 101 個取樣點的最大值,實測 2.141578 m(N 向相鄰的 (617, 5540)/(617, 5541));作為對照,(613, 5539)/(614, 5539) 這一對為 2.0678 m。子午線收斂角以 get_factors 於 bbox 15 × 15 取樣,並以閉式 atan(tan(Δλ)·sin(φ)) 於四角交叉檢核,實測 0.232526 至 0.247545 度。量測日期 2026-08-10。",
+    "note": "主因為格網北與真北的夾角(子午線收斂角),在 500 m 邊長上即產生公尺級的旋轉差。"
+  },
+  "corridor_survey": {
+    "road": "信義路五段",
+    "chord_tolerance_m": 2.0,
+    "straight_run_m": 1071.6,
+    "straight_run_along_m": 1071.7,
+    "bbox_limited": true,
+    "west_end_e": 306502.4,
+    "east_end_e": 307573.8,
+    "relaxed": {
+      "chord_tolerance_m": 5.0,
+      "bbox_limited": {
+        "run_m": 2197.0,
+        "along_m": 2197.2,
+        "west_end_e": 305523.8,
+        "west_end_inside_bbox": true
+      },
+      "unlimited": {
+        "run_m": 2880.3,
+        "along_m": 2880.6,
+        "west_end_e": 304864.6,
+        "west_end_inside_bbox": false
+      },
+      "why_not_adopted": "未採為見證的理由是判準本身,與 bbox 無關:2.2 km 上容許 5 m 對弦偏離已是可察覺的彎道,對「高速長直線」型路線的見證意義不足。本契約固定以 chord_tolerance_m = 2.0 為直線判準。"
+    },
+    "junction_ref": {
+      "name": "基隆路口",
+      "westmost_node_e": 306459.6,
+      "nodes_e_range": [306459.6, 306482.3],
+      "note": "雙向分隔道路交叉,OSM 共有四個交會節點;錨點的「東側 42.8 m」以最西節點為基準。"
+    },
+    "survey": "OSM 主線 way(highway=primary|secondary|trunk|tertiary,name 為信義路四/五/六段)依端點接合成連續折線後,限制在 bbox 內,取對弦垂距 <= chord_tolerance_m 的最長連續段。判準 2.0 m 得弦長 1071.6 m / 沿線 1071.7 m,兩端皆落在信義路五段上,與兩個 high_speed_straight 錨點吻合。同一資料與方法放寬至 5.0 m 得弦長 2197.0 m / 沿線 2197.2 m,其西端 E 305523.8 仍落在 bbox 內(e_min = 305500)。另一個對照變體是放寬至 5.0 m 且不限制在 bbox 內,得 2880.3 m,其西端 E 304864.6 已越出 bbox 西界。量測日期 2026-08-10(以自建重建腳本重測,12 種 way-set × 判準 × 限制變體)。"
+  },
+  "attribution": "錨點、建物高度、道路與步道幾何取自 OpenStreetMap,(c) OpenStreetMap contributors,ODbL;高程取樣經 opentopodata 提供之 SRTM30m / ASTER30m。本檔僅引用少量座標作為範圍見證,衍生 tiles 的授權相容性另見 FTP-6。"
+}
