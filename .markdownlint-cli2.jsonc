@@ -1,0 +1,13 @@
+{
+  // Docs-only CI profile lints every *.md in the repo (ci.yml docs job).
+  // Defaults assume 80-col English prose; this repo's docs are zh-TW with
+  // tables and long lines, so length/HTML rules are off. Structure rules stay.
+  "config": {
+    "MD013": false,
+    "MD033": false,
+    "MD024": { "siblings_only": true },
+    "MD034": false,
+    "MD041": false,
+    "MD060": false
+  }
+}
