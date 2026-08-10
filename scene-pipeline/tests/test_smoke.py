@@ -55,3 +55,9 @@ def test_subpackage_importable(module: str) -> None:
 @pytest.mark.parametrize("module", RUNTIME_DEPS)
 def test_runtime_dependency_importable(module: str) -> None:
     importlib.import_module(module)
+
+
+def test_probe_ftp53_python_job_runs():
+    """FTP-53 probe A: a passing scene-pipeline change must route to the
+    python job and go green. Throwaway — this branch is never merged."""
+    assert True
