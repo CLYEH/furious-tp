@@ -338,6 +338,21 @@ check("B11", "Z budget covers the measured worst tile with the declared margin",
     z.terrain_worst_relief_m > 0 && span >= z.terrain_worst_relief_m,
     "encodable span must cover the measured terrain relief",
   );
+  // the survey must be internally consistent: the worst tile is a tile of
+  // THIS bbox, and the overall worst span cannot be under the terrain-only one
+  assert(
+    z.bbox_min_h_m <= z.worst_tile_min_h_m && z.worst_tile_min_h_m <= z.bbox_max_h_m,
+    `worst_tile_min_h_m ${z.worst_tile_min_h_m} outside the surveyed bbox range ` +
+      `[${z.bbox_min_h_m}, ${z.bbox_max_h_m}]`,
+  );
+  assert(
+    z.worst_tile_span_m >= z.terrain_worst_relief_m,
+    "the overall worst span cannot be smaller than the terrain-only worst relief",
+  );
+  assert(
+    z.bbox_max_h_m - z.bbox_min_h_m >= z.terrain_worst_relief_m,
+    "bbox relief cannot be smaller than a single tile's relief",
+  );
   // grid.md must print the measured witnesses, not a hand-wave
   for (const lit of [z.worst_tile_span_m, z.terrain_worst_relief_m]) {
     assert(citesNumber(md, lit), `grid.md must cite the measured witness ${lit} m`);
