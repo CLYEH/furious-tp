@@ -68,18 +68,41 @@ jobs:
           # How the file list is READ, one layer upstream of route(). It is a
           # seam of its own because the routing table hands strings straight
           # to route() and is therefore blind to this layer.
-          # DECLARATION (FTP-53 review B1): current behaviour, verbatim — no
-          # quoting flag, no guard. The acquisition cases below are red here.
-          refuse_quoted() { cat; }
-          changed_files() { git diff --name-only "$1...$2" | refuse_quoted; }
+          # git escapes paths holding non-ASCII bytes and wraps them in double
+          # quotes unless core.quotePath is off; quoting off is the only way
+          # to get a list the patterns can match (FTP-53 review B1).
+          changed_files() {
+            git -c core.quotePath=false diff --name-only "$1...$2" | refuse_quoted
+          }
+          # Even then, a path holding " or \ or a control character stays
+          # quoted. It cannot be routed correctly, so refuse to route at all:
+          # failing here turns the profile job red, which blocks the PR, while
+          # a wrong route just skips jobs — and GitHub counts a skipped job as
+          # a passed required check.
+          refuse_quoted() {
+            out="$(cat)"
+            case "$out" in
+              *'"'*)
+                echo "changed-file list holds a git-quoted path — refusing to route" >&2
+                return 1
+                ;;
+            esac
+            [ -z "$out" ] || printf '%s\n' "$out"
+          }
 
           # --- output emission ----------------------------------------------
           # How the decision REACHES the jobs. Also a seam: a decision that is
           # right but half-written skips every downstream job.
-          # DECLARATION (FTP-53 review S1): current behaviour, verbatim —
-          # writes what it is given, verifies nothing.
+          # A half-written decision would skip every downstream job while this
+          # job stayed green, so the emission checks itself (review S1).
           emit_outputs() {
             for kv in $1; do printf 'run_%s\n' "$kv" >> "$2"; done
+            for want in run_gates run_docs run_python; do
+              grep -qE "^${want}=(true|false)\$" "$2" || {
+                echo "routing did not emit ${want} — refusing to route this PR" >&2
+                return 1
+              }
+            done
           }
 
           # --- exam: routing self-test --------------------------------------
@@ -285,9 +308,15 @@ jobs:
           # route() prints "<job>=<bool>" words; the outputs are "run_<job>".
           emit_outputs "$decision" "$GITHUB_OUTPUT"
 
+  # Every downstream condition is "run unless routing explicitly said false".
+  # A missing or misspelled output then means the checks RUN, not that they
+  # are skipped: skipped counts as passed on a required check, so fail-open
+  # here would be a silent green (FTP-53 review S1). This also keeps `gates`
+  # bit-for-bit equivalent to the docs_only != 'true' it replaced, degraded
+  # cases included.
   gates:
     needs: profile
-    if: needs.profile.outputs.run_gates == 'true'
+    if: needs.profile.outputs.run_gates != 'false'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -311,7 +340,7 @@ jobs:
   # scene-pipeline/README.md prescribes, so CI and the README cannot drift.
   python:
     needs: profile
-    if: needs.profile.outputs.run_python == 'true'
+    if: needs.profile.outputs.run_python != 'false'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -328,7 +357,7 @@ jobs:
 
   docs:
     needs: profile
-    if: needs.profile.outputs.run_docs == 'true'
+    if: needs.profile.outputs.run_docs != 'false'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -337,7 +366,12 @@ jobs:
           node-version: 20
       # The docs-only reduced set: markdown lint + link check.
       - run: npx --yes markdownlint-cli2 "**/*.md" "!**/node_modules/**"
-      - run: npx --yes markdown-link-check --quiet $(git ls-files '*.md')
+      # Same quoting defect as the routing diff (review B1): git ls-files
+      # escapes non-ASCII paths too, and the escaped token reaches the checker
+      # as a path that does not exist (ENOENT, exit 1). Widening this job from
+      # docs-only to "any PR carrying .md" multiplies where that lands, so the
+      # same one flag goes here.
+      - run: npx --yes markdown-link-check --quiet $(git -c core.quotePath=false ls-files '*.md')
 
   # Hard floor: runs on EVERY profile — a docs PR must not merge unchecked.
   protocol:
