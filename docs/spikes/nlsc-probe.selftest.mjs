@@ -12,6 +12,12 @@
 // Frozen in the FTP-5 declaration commit BEFORE nlsc-probe.mjs existed; every
 // case was red at that point. Weakening any assertion later must be justified
 // in the ticket [handoff].
+//
+// Round 2 (Layer 2 review of PR #12) added four cases marked [round-2]. They
+// pin behaviour the shipped probe ALREADY had right but the exam did not prove:
+// Layer 2's independent mutation run produced four mutants that passed all 12
+// original cases. Each [round-2] case was verified red against the specific
+// mutant it targets before being kept — see the ticket [handoff] for the run.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -158,6 +164,61 @@ test("integrity: a corrupt content-encoding is detected, not silently accepted",
     assert.equal(out.integrity.decodable, 0);
     assert.equal(out.integrity.defects.length, 2);
     assert.equal(out.integrity.defects[0].kind, "corrupt_content_encoding");
+    // [round-2] The NUL ratio is the number the report quotes as its evidence
+    // that the body is not a truncated/mangled gzip stream but empty buffer
+    // residue. An unmeasured number must not be quotable: this body is all NUL,
+    // so the ratio is exactly 1 and nothing else.
+    assert.equal(out.integrity.defects[0].rawNulByteRatio, 1);
+    // [round-2] With zero decodable samples there is no evidence of stability
+    // either way. Reporting `true` here (the pre-`be889ef` behaviour) would let
+    // a D5 fingerprint track corrupt content and call it stable.
+    assert.equal(out.versionSignals.bodyStableAcrossSamples, null);
+  } finally {
+    await s.close();
+  }
+});
+
+// [round-2] A constant NUL ratio (0 or 1) must not survive: pin a body whose
+// ratio is neither, computed from a known mix.
+test("integrity: the NUL-byte ratio is measured, not a constant", async () => {
+  const body = Buffer.alloc(4000, 0xff);
+  body.fill(0, 0, 1000); // exactly 25% NUL
+  const s = await serve((req, res) => {
+    res.writeHead(200, { "content-type": "application/json", "content-encoding": "gzip", "content-length": String(body.length) });
+    res.end(body);
+  });
+  try {
+    const r = await runProbe(["--mode=integrity", `--url=${s.origin}/tileset.json`, "--samples=1", "--rps=2"]);
+    assert.equal(r.code, 4);
+    const out = parse(r.stdout);
+    assert.equal(out.integrity.samples[0].rawNulByteRatio, 0.25);
+    assert.equal(out.integrity.defects[0].rawNulByteRatio, 0.25);
+  } finally {
+    await s.close();
+  }
+});
+
+// [round-2] The live `road2nd/0` endpoint returns a DIFFERENT body on every
+// request at a fixed Content-Length. A fingerprint that cannot see that — or
+// hashes that are constant — would report a mutating endpoint as stable.
+test("integrity: bodies that differ between samples are reported unstable, with distinct hashes", async () => {
+  let n = 0;
+  const s = await serve((req, res) => {
+    n += 1;
+    const buf = gzipSync(Buffer.from(JSON.stringify({ asset: { version: "1.0" }, root: {}, nonce: n })));
+    res.writeHead(200, { "content-type": "application/json", "content-encoding": "gzip" });
+    res.end(buf);
+  });
+  try {
+    const r = await runProbe(["--mode=integrity", `--url=${s.origin}/tileset.json`, "--samples=2", "--rps=2"]);
+    assert.equal(r.code, 0, r.stderr);
+    const out = parse(r.stdout);
+    assert.equal(out.integrity.decodable, 2);
+    assert.equal(out.versionSignals.bodyStableAcrossSamples, false);
+    assert.equal(out.versionSignals.decodedBodySha256.length, 2, "two different bodies must yield two decoded hashes");
+    const [a, b] = out.integrity.samples;
+    assert.notEqual(a.rawSha256, b.rawSha256, "rawSha256 must track the raw bytes, not be a constant");
+    assert.notEqual(a.decodedSha256, b.decodedSha256);
   } finally {
     await s.close();
   }
@@ -226,6 +287,28 @@ test("--rps above the hard cap is clamped, and the clamp is disclosed", async ()
     assert.equal(out.config.rps, HARD_RPS_CAP);
     assert.equal(out.config.rpsRequested, 500);
     assert.ok(out.findings.some((f) => /clamp/i.test(JSON.stringify(f))));
+  } finally {
+    await s.close();
+  }
+});
+
+// [round-2] The case above proves the clamp is REPORTED; the case below proves
+// it is APPLIED. Layer 2's mutant drove 174 req/s while printing
+// `config.rps: 2`, and passed all 12 original cases — because the clamp case
+// only read the reported value and the wall-clock case only asked for --rps=2,
+// which is already inside the cap. Restraint on a public service is the one
+// property of this probe that must never be merely announced.
+test("the hard cap throttles in wall-clock time even when --rps demands more", async () => {
+  const s = await serve(tilesetTree);
+  try {
+    const r = await runProbe(["--mode=drive", `--root=${s.origin}/l0/tileset.json`, "--depth=3", "--max-requests=5", "--rps=500"]);
+    assert.equal(r.code, 0, r.stderr);
+    const out = parse(r.stdout);
+    assert.equal(out.config.rps, HARD_RPS_CAP, "the applied rate must be the cap");
+    assert.equal(s.state.requests.length, 5);
+    // 5 requests at the 2 rps cap => >= ~2s of spacing, whatever --rps asked for.
+    const span = s.state.requests.at(-1).at - s.state.requests[0].at;
+    assert.ok(span >= 1800, `hard cap was reported but not enforced: span=${span}ms`);
   } finally {
     await s.close();
   }
