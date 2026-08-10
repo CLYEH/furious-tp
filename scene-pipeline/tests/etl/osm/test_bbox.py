@@ -299,6 +299,47 @@ def test_cut_is_snapped_not_merely_interpolated() -> None:
     assert runs[0].points[0][0] == bbox.e_min
 
 
+def test_uncut_endpoint_is_handed_back_verbatim_not_recomputed() -> None:
+    # The sibling of the case above, found by a second mutation pass: deleting
+    # the `t == 1.0 -> return q` passthrough in `_snap` also survived the exam,
+    # for the same reason — on Taipei-scale segments `p + 1.0 * (q - p)` returns
+    # `q` exactly, so recomputing an endpoint that was never cut is invisible.
+    #
+    # Witness: with p far enough away that `q - p` cannot be represented
+    # exactly, the round trip lands a whole metre off. The endpoint that was
+    # NOT clipped must come back bit-for-bit, because it is an interior vertex
+    # of the road: it also appears as the start of the next segment, and the two
+    # copies have to compare equal or `_finish` stops collapsing them and the
+    # node is emitted twice.
+    bbox = BBox(e_min=307000.0, n_min=2769000.0, e_max=307500.0, n_max=2770000.0)
+    p = (1e16, 2769600.0)  # absurdly far east; only the entry gets cut
+    q = (307201.0, 2769600.0)  # inside, and an odd metre: the parity is the point
+
+    naive = p[0] + 1.0 * (q[0] - p[0])
+    assert naive == 307200.0  # the witness really does distinguish the two
+    assert naive != q[0]
+
+    runs = clip_polyline([p, q], bbox)
+    assert len(runs) == 1
+    assert runs[0].points == ((bbox.e_max, 2769600.0), q)  # q verbatim
+    assert runs[0].indices == (None, 1)
+
+
+def test_vertex_starting_on_the_max_edge_is_a_cut_not_an_original_vertex() -> None:
+    # Mirror of test_vertex_exactly_on_the_max_edge_becomes_a_cut_vertex, which
+    # only covered the max-edge vertex as a segment END. A mutant that decides
+    # the run's identity from `t0 == 0.0` alone — dropping the containment
+    # check — survived that test but is wrong here: the max edge is not ours, so
+    # a way beginning exactly on it begins with a boundary cut. Getting this
+    # wrong hands the node a real id, and it then shows up in the dangling-node
+    # QA report as if the source data had a dead end there.
+    runs = clip_polyline([(100.0, 50.0), (50.0, 50.0)], BOX)
+    assert len(runs) == 1
+    assert runs[0].points == ((100.0, 50.0), (50.0, 50.0))
+    assert runs[0].indices == (None, 1)
+    assert runs[0].cut_start is True
+
+
 def test_many_crossings_are_all_preserved() -> None:
     # Oversized input: 100 excursions in and out. Nothing may be silently
     # coalesced or truncated.
