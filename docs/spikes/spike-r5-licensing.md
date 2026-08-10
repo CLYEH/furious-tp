@@ -62,6 +62,19 @@
 - §4.3(公開使用 Produced Work 時):
   > … if you Publicly Use a Produced Work, You must include a notice associated with the Produced Work reasonably calculated to make any Person that uses, views, accesses, interacts with, or is otherwise exposed to the Produced Work aware that Content was obtained from the Database … and that it is available under this License.
 
+OSMF [Attribution Guidelines](https://osmfoundation.org/wiki/Licence/Attribution_Guidelines)(2021-06-25 董事會通過)將上述義務具體化:
+
+> Attribution must be to "OpenStreetMap". Attribution must also make it clear that the data is available under the Open Database License.
+
+- **資料庫形式散布之 safe harbour(本專案 tiles 適用)**:
+  > You must include attribution to OpenStreetMap and either the text of the ODbL or a link to it as part of the database, derivative database, or database as part of a collective database. You must include the notices in a location (such as a relevant directory) where users would be likely to look for it, such as a readme file, or within the data or metadata.
+
+  → attribution 不能只出現在 HUD,必須**隨 tiles 本體交付**(tileset metadata 或同目錄 readme)。
+- **`© OpenStreetMap contributors` 字樣之依據**:
+  > The historical forms of attribution "© OpenStreetMap contributors" or "© OpenStreetMap" are acceptable.
+
+  註(本次查證更正):此字樣**不在** [openstreetmap.org/copyright](https://www.openstreetmap.org/copyright) 頁面文字內——該頁僅要求「credit OpenStreetMap and its contributors」並指向本 guideline。ticket AC 指定之 `(c) OpenStreetMap contributors` 依本 guideline 屬「可接受」形式,故沿用;其權威出處為 Attribution Guidelines,非 copyright 頁。
+
 #### Share-alike(§4.4)與其界限(§4.5)
 
 - §4.4:
@@ -99,9 +112,13 @@
 
 > 三、課予義務 (二)使用者利用依本條款提供之開放資料,及後續之衍生物,應以符合附件所示「顯名聲明」要求之方式,明確標示原資料提供機關之相關聲明;**未盡顯名標示義務者,視為自始未取得開放資料之授權。**
 
-附件顯名聲明格式:
+附件顯名聲明格式(**全文**,本次查證補齊——原草案節略了末句):
 
-> 提供機關/單位 [年份] [開放資料釋出名稱與版本號] 此開放資料依政府資料開放授權條款 (Open Government Data License) 進行公眾釋出……政府資料開放授權條款:https://data.gov.tw/license
+> 附件:顯名聲明
+> 提供機關／單位 [年份] [開放資料釋出名稱與版本號] 此開放資料依政府資料開放授權條款 (Open Government Data License) 進行公眾釋出,使用者於遵守本條款各項規定之前提下,得利用之。
+> 政府資料開放授權條款: <https://data.gov.tw/license>
+
+因顯名標示為**失權要件**(未盡義務即視為自始未取得授權),attribution 文字採本附件全文格式,不節略。
 
 #### CC BY 4.0 相容(第四點(二))
 
@@ -115,7 +132,7 @@
 | 內政部 20m DTM | 政府資料開放授權條款-第1版(資料集頁「授權方式」;API `license` 欄位驗證) | [data.gov.tw dataset 35430「內政部20公尺網格數值地形模型資料」](https://data.gov.tw/dataset/35430) |
 | NLSC(國土測繪中心) | NLSC 於 data.gov.tw 釋出之資料集帶政府資料開放授權條款-第1版標示(API `license` 欄位驗證;驗證例為**非圖資**資料集,僅證明 NLSC 以本條款釋出開放資料);**3D 建物圖資實際適用之授權與服務條款屬 FTP-5**,此處為條件式結論 | [data.gov.tw NLSC 資料集驗證例](https://data.gov.tw/dataset/39082);服務條款 → Spike R1 |
 
-風險備註(轉交 FTP-5):data.gov.tw 民眾需求區 [「3D建物模型」](https://data.gov.tw/suggests/136485) 顯示臺北市轄內 3D 建物模型未由 NLSC 提供、臺北市政府亦未另行開放——信義區建物來源可用性須由 FTP-5 確認。
+風險備註(轉交 FTP-5):data.gov.tw 民眾需求區 [「3D建物模型」](https://data.gov.tw/suggests/136485) 之**陳情內容**稱「其他縣市的3D建物模型資料都可從……國土測繪中心取得,獨缺臺北市,臺北市也沒有額外在其他地方提供此服務」。該需求狀態為「已回復」,但回覆內容未於頁面公開呈現——**此為民眾主張,非平臺或機關之聲明**,僅作為風險訊號。信義區建物來源可用性須由 FTP-5 確認。
 
 ### AC3 — 疊加結論
 
@@ -138,12 +155,12 @@
 
 #### Attribution 文字草案
 
-完整版(LICENSING.md / 關於頁):
+完整版(LICENSING.md / 關於頁;政府資料部分採附件顯名聲明全文格式):
 
 > 道路資料 (c) OpenStreetMap contributors,依 [Open Database License (ODbL) 1.0](https://opendatacommons.org/licenses/odbl/1-0/) 提供;road tiles 為 OSM 與臺北市政府道路資料之衍生資料庫,依 ODbL 1.0 散布。
-> 臺北市政府 [年份] [資料集名稱與版本]:此開放資料依[政府資料開放授權條款-第1版](https://data.gov.tw/license)進行公眾釋出。
-> 內政部 [年份] 內政部20公尺網格數值地形模型資料:此開放資料依[政府資料開放授權條款-第1版](https://data.gov.tw/license)進行公眾釋出。
-> 內政部國土測繪中心 [年份] [圖資名稱與版本]:此開放資料依[政府資料開放授權條款-第1版](https://data.gov.tw/license)進行公眾釋出。(以 FTP-5 確認之供應方式為準)
+> 臺北市政府 [年份] [資料集名稱與版本] 此開放資料依[政府資料開放授權條款-第1版](https://data.gov.tw/license)進行公眾釋出,使用者於遵守本條款各項規定之前提下,得利用之。
+> 內政部 [年份] 內政部20公尺網格數值地形模型資料 此開放資料依[政府資料開放授權條款-第1版](https://data.gov.tw/license)進行公眾釋出,使用者於遵守本條款各項規定之前提下,得利用之。
+> 內政部國土測繪中心 [年份] [圖資名稱與版本] 此開放資料依[政府資料開放授權條款-第1版](https://data.gov.tw/license)進行公眾釋出,使用者於遵守本條款各項規定之前提下,得利用之。(以 FTP-5 確認之供應方式為準)
 
 HUD 短版(FTP-46 使用;點擊導向完整版):
 
@@ -151,4 +168,4 @@ HUD 短版(FTP-46 使用;點擊導向完整版):
 
 ## 結論
 
-**可散布(附條件)。** road tiles 以 ODbL 1.0 散布(share-alike + §4.2 notices + §4.6 免費全量提供);terrain / props tiles 依 OGDL v1 附顯名聲明散布;整體場景為 Collective Database,share-alike 不外溢。條件:(1) 顯名標示為失權要件,attribution 必須隨產物與展示介面共同交付(FTP-46/FTP-51);(2) NLSC 3D 建物供應方式與服務條款由 FTP-5 確認後,LICENSING.md 之 NLSC 條目才能定稿。方案細節見 [`LICENSING.md`](../../LICENSING.md)。
+**可散布(附條件)。** road tiles 以 ODbL 1.0 散布(share-alike + §4.2 notices + §4.6 免費全量提供);terrain / props tiles 依 OGDL v1 附顯名聲明散布;整體場景為 Collective Database,share-alike 不外溢。條件:(1) 顯名標示為失權要件,attribution 必須隨產物與展示介面共同交付(FTP-46/FTP-51),且依 OSMF Attribution Guidelines 之 Databases safe harbour,亦須存在於 tiles 本體(metadata 或同目錄 readme);(2) NLSC 3D 建物供應方式與服務條款由 FTP-5 確認後,LICENSING.md 之 NLSC 條目才能定稿;(3) **road 以外圖層不得混入任何 OSM 資料**——此為整體場景維持 Collective Database(§4.5a)的前提,一旦破壞,share-alike 即外溢至該圖層(對 FTP-31 / props pipeline 具拘束力)。方案細節見 [`LICENSING.md`](../../LICENSING.md)。
