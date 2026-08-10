@@ -1,6 +1,9 @@
 # e2e harness (Milestone 0, FTP-14): every push to `test` builds web-client,
 # deploys it to GitHub Pages (the test environment), then runs the Playwright
-# smoke against the deployed URL. `test` is synced from `develop` on merge.
+# smoke against the deployed URL. `test` is synced from `develop` by the
+# merging agent (development-workflow §4). Repo prerequisite (provisioned at
+# bootstrap): Pages build_type=workflow, and the github-pages environment's
+# deployment-branch-policies must include `test`.
 name: test-deploy
 
 on:
@@ -9,8 +12,6 @@ on:
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 concurrency:
   group: pages
@@ -19,6 +20,10 @@ concurrency:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
     outputs:
       page_url: ${{ steps.deployment.outputs.page_url }}
     environment:
