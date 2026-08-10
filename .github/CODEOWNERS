@@ -1,0 +1,8 @@
+# Rule-carrier protection (bootstrap, Milestone 0): governance files merge
+# only with the human's code-owner review. Agents keep proposal rights (PRs);
+# the human alone holds merge rights on these paths. API contract files
+# (contracts/) are deliberately excluded — gated by their own flow.
+/CLAUDE.md @CLYEH
+/.github/workflows/ @CLYEH
+/.github/CODEOWNERS @CLYEH
+/DESIGN.md @CLYEH

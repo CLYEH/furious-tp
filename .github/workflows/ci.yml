@@ -1,0 +1,80 @@
+# Web-project CI — the C tier (development-loop §8).
+# Placeholders to replace at instantiation (/bootstrap, Milestone 0):
+#   web-client      — the package directory holding package.json (e.g. "app" or ".")
+#   20 — the project's Node major (e.g. 20)
+#   develop — the integration branch PRs target (e.g. develop)
+#
+# The profile is determined by DIFF CONTENT, never by the declared change
+# type; crossing the boundary auto-escalates to standard. The hard floor —
+# protocol compliance here, Layer 2 review and branch protection outside
+# CI — is structural: no job below conditions it on the profile.
+
+name: ci
+
+on:
+  pull_request:
+    branches: [develop, main]
+
+jobs:
+  profile:
+    runs-on: ubuntu-latest
+    outputs:
+      docs_only: ${{ steps.decide.outputs.docs_only }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: decide
+        # The decision lives in .github/profile.sh (shipped beside this
+        # workflow) so the routing logic is unit-testable outside Actions.
+        run: |
+          docs_only="$(git diff --name-only "origin/${{ github.base_ref }}"...HEAD | sh .github/profile.sh)"
+          echo "docs_only=$docs_only" >> "$GITHUB_OUTPUT"
+
+  gates:
+    needs: profile
+    if: needs.profile.outputs.docs_only != 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web-client
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: web-client/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm run build
+      - run: npm run test
+
+  docs:
+    needs: profile
+    if: needs.profile.outputs.docs_only == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      # The docs-only reduced set: markdown lint + link check.
+      - run: npx --yes markdownlint-cli2 "**/*.md" "!**/node_modules/**"
+      - run: npx --yes markdown-link-check --quiet $(git ls-files '*.md')
+
+  # Hard floor: runs on EVERY profile — a docs PR must not merge unchecked.
+  protocol:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      # Wired at bootstrap: verifies PR title format ("FTP-n: summary") and
+      # non-closing ticket reference ("Refs FTP-n") from the event payload.
+      - run: node .github/protocol-check.mjs
