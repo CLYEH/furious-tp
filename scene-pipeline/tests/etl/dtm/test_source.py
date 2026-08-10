@@ -211,3 +211,29 @@ def test_failed_download_leaves_no_partial_file(tmp_path, monkeypatch):
         download_source("https://example.invalid/dtm.tif", dest, timeout=30.0)
     assert not dest.exists()
     assert list(tmp_path.glob("*.part")) == []
+
+
+def test_a_failed_download_does_not_destroy_the_copy_already_on_disk(tmp_path, monkeypatch):
+    """The `.part` hop guards what is already there, not just tidiness.
+
+    Streaming straight to `dest` truncates a good local copy the instant the
+    body starts arriving, and the cleanup that follows removes the remains —
+    so the test above still passes while the operator's existing source has
+    been destroyed by a dropped connection. Re-running a download must never
+    be able to leave them with less than they started with.
+    """
+
+    def half_then_die(*a, **k):
+        def chunks():
+            yield b"abc"
+            raise requests.ConnectionError("dropped")
+
+        return _FakeResponse(chunks())
+
+    monkeypatch.setattr(requests, "get", half_then_die)
+    dest = tmp_path / "dtm.tif"
+    dest.write_bytes(b"the-raster-downloaded-last-week")
+    with pytest.raises(DtmSourceError):
+        download_source("https://example.invalid/dtm.tif", dest, timeout=30.0)
+    assert dest.read_bytes() == b"the-raster-downloaded-last-week"
+    assert list(tmp_path.glob("*.part")) == []

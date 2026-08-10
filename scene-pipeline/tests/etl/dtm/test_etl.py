@@ -337,6 +337,38 @@ def test_a_failure_while_publishing_leaves_nothing_behind(aligned_source, tmp_pa
     assert list(out.parent.glob("*.tmp")) == []
 
 
+def test_a_failed_republish_leaves_the_previous_output_intact(tmp_path, aligned_source,
+                                                              source_array, attribution,
+                                                              monkeypatch):
+    """Temp-then-replace has a second job, and only this test can see it.
+
+    The assertion above ("nothing left behind") is satisfied even by a variant
+    that writes the raster straight to its final path: the failure handler
+    deletes the wreck it just made, so no litter remains either way. What that
+    variant also does is destroy the *previous* output — a file downstream
+    stages may already be reading — the moment the new write opens. Until the
+    replace lands, the last good raster must still be the published one, so a
+    failed re-run costs nothing.
+    """
+    out = tmp_path / "out" / "dtm.tif"
+    run_dtm_etl(source=aligned_source, out=out, source_overrides=attribution)
+    published, _ = read_band(out)
+
+    shifted = write_raster(tmp_path / "src" / "shifted.tif", source_array + 50.0,
+                           west=SOURCE_WEST, north=SOURCE_NORTH)
+
+    def boom(src, dst):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(os, "replace", boom)
+    with pytest.raises(DtmOutputError):
+        run_dtm_etl(source=shifted, out=out, source_overrides=attribution)
+
+    assert out.exists()
+    np.testing.assert_array_equal(read_band(out)[0], published)
+    assert list(out.parent.glob("*.tmp")) == []
+
+
 def test_a_successful_run_leaves_no_temporary_files(aligned_source, run_etl):
     result = run_etl(aligned_source)
     assert list(result.output_path.parent.glob("*.tmp")) == []
