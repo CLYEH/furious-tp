@@ -4,6 +4,7 @@
 
 - 需求與架構:Linear 專案「臺北開放資料 3D 數位孿生城市」(PRD / RFC 文件)
 - 工作流程:yclaude-force(branch model 與協定見 `CLAUDE.md`)
+- **文件索引**:[docs/README.md](docs/README.md)
 - **Test 環境**:https://clyeh.github.io/furious-tp/ (`test` 分支 push 自動部署 + Playwright smoke)
 
 ## Develop
