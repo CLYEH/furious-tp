@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
+
 from scene_pipeline.etl.dtm.errors import DtmCoverageError
 from scene_pipeline.etl.dtm.etl import OUTPUT_NODATA
 
@@ -173,7 +174,7 @@ def test_an_entirely_void_source_is_an_error_not_an_empty_raster(tmp_path, sourc
     array = np.full_like(source_array, SENTINEL)
     path = write_raster(tmp_path / "src" / "allvoid.tif", array, west=SOURCE_WEST,
                         north=SOURCE_NORTH, nodata=SENTINEL)
-    with pytest.raises(DtmCoverageError, match="(?i)valid"):
+    with pytest.raises(DtmCoverageError, match="no valid pixels"):
         run_etl(path)
 
 

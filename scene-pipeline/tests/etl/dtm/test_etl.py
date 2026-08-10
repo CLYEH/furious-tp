@@ -13,6 +13,7 @@ import numpy as np
 import pytest
 import rasterio
 from pyproj import Transformer
+
 from scene_pipeline.etl.dtm.errors import (
     DtmCoverageError,
     DtmOutputError,
@@ -159,11 +160,18 @@ def test_contract_anchors_agree_with_their_wgs84_twins(m1_area_doc):
 
 
 def test_a_source_that_misses_the_bbox_is_an_error(tmp_path, source_array, run_etl):
-    """Handing the ETL the wrong DTM sheet must say so, not emit an empty tile."""
+    """Handing the ETL the wrong DTM sheet must say so, not emit an empty tile.
+
+    Asserting on the *distinguishing* wording, not merely on the exception
+    type: without the geometric check the run still fails, but as "no valid
+    pixels", which reads like a void-ridden sheet rather than the wrong sheet.
+    The operator needs to know which, so the message has to place the source.
+    """
     far = write_raster(tmp_path / "src" / "far.tif", source_array, west=400000.0,
                        north=2900000.0)
-    with pytest.raises(DtmCoverageError, match="(?i)bbox|overlap|intersect"):
+    with pytest.raises(DtmCoverageError, match="does not overlap") as excinfo:
         run_etl(far)
+    assert "400000" in str(excinfo.value), "the message must report where the source is"
 
 
 def test_partial_coverage_still_spans_the_bbox_and_reports_the_gap(tmp_path, run_etl):
@@ -255,6 +263,49 @@ def test_provenance_describes_both_grids_and_the_contract(aligned_source, run_et
     assert record["area"]["spec_version"] == m1_area_doc["spec_version"]
     assert record["generated_at"].endswith("Z")
     assert record["tool"]["name"] == "scene_pipeline.etl.dtm"
+
+
+def test_a_local_source_needs_an_explicit_retrieval_date(aligned_source, tmp_path, attribution):
+    """Only a download witnesses a date.
+
+    `build_source_ref` is told the download date solely when this run fetched
+    the file; wiring it up unconditionally would stamp "today" on a file
+    obtained years ago, which is a provenance claim nobody checked. That is
+    the failure the record exists to prevent, so it is pinned here at the ETL
+    level and not only on the helper.
+    """
+    meta = {k: v for k, v in attribution.items() if k != "retrieved"}
+    out = tmp_path / "out" / "dtm.tif"
+    with pytest.raises(DtmSourceMetadataError, match="retrieved"):
+        run_dtm_etl(source=aligned_source, out=out, source_overrides=meta)
+    assert not out.exists()
+
+
+def test_a_downloaded_source_may_be_dated_by_the_run(tmp_path, aligned_source, attribution,
+                                                     monkeypatch):
+    """The other half of the same rule, so the fix cannot be "always refuse"."""
+    import datetime as dt
+
+    import requests
+
+    class _Response:
+        def raise_for_status(self):
+            return None
+
+        def iter_content(self, chunk_size=1):
+            yield aligned_source.read_bytes()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(requests, "get", lambda *a, **k: _Response())
+    meta = {k: v for k, v in attribution.items() if k != "retrieved"}
+    result = run_dtm_etl(source="https://example.invalid/dtm.tif", out=tmp_path / "o" / "d.tif",
+                         source_overrides=meta, download_dir=tmp_path / "dl")
+    assert result.source.retrieved == dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d")
 
 
 def test_no_output_is_produced_without_attribution(aligned_source, tmp_path):
