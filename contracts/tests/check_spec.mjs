@@ -382,7 +382,8 @@ check("B12", "h0 selection rule is executable and keeps q_z in range", () => {
     [z.worst_tile_min_h_m, z.worst_tile_min_h_m + z.worst_tile_span_m],
     [-7, -7 + 320], // bbox extremes measured by the terrain survey
     [0, 0], // degenerate: flat tile
-    [3.0001, 3.0001 + g.z_quant_max * g.z_step_m], // exactly at the budget
+    [3.0, 3.0 + g.z_quant_max * g.z_step_m], // exactly at the budget
+    [-7.0, -7.0 + g.z_quant_max * g.z_step_m], // budget-filling, negative base
   ];
   for (const [minH, maxH] of cases) {
     const h0 = h0Of(minH, g.z_step_m);
@@ -399,6 +400,16 @@ check("B12", "h0 selection rule is executable and keeps q_z in range", () => {
       `q_z ${qHi} exceeds z_quant_max for span ${maxH - minH} m (h0 ${h0})`,
     );
   }
+  // negative case: a tile one step over budget must be detected as
+  // non-compliant, otherwise the condition is decorative
+  const overMin = 10.0;
+  const overMax = overMin + g.z_quant_max * g.z_step_m + g.z_step_m;
+  const overH0 = h0Of(overMin, g.z_step_m);
+  assert(
+    overMax - overH0 > g.z_quant_max * g.z_step_m &&
+      quantZ(overMax, overH0, g.z_step_m) > g.z_quant_max,
+    "an over-budget tile must violate the compliance condition",
+  );
 });
 
 check("B13", "boundary heights are exactly representable on both sides of a seam", () => {

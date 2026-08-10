@@ -7,7 +7,7 @@
 - **spec/** — 規範性文件。`spec/grid.md` 定義 EPSG:3826 tile 網格、per-tile 座標框架與量化、ECEF 轉換慣例(RFC D2)、接縫規則。
 - **constants/** — 機器可讀常數,為數值的**單一正典來源**(single source of truth);spec 文件內出現的數字皆引自此處。兩端單元測試直接讀取這些 JSON:
   - `constants/grid.json` — tile 網格與量化參數
-  - `constants/m1_area.json` — M1 信義計畫區 bbox 定案與選定理由
+  - `constants/m1_area.json` — M1 信義計畫區 bbox 定案、選定理由,以及支撐這些決定的實測 survey 區塊(`z_budget` / `frame_survey` / `corridor_survey`)
   - `constants/ecef_examples.json` — EPSG:3826 → ECEF 轉換測試向量
 - **tests/** — 契約自檢(`node contracts/tests/check_spec.mjs`):驗證 spec 與常數的內部一致性,並以獨立實作重算 ECEF 向量。
 - manifest schema 與各 binary tile 格式(terrain / road / props / physics)由後續票補入(FTP-23 起),不在本版範圍。
