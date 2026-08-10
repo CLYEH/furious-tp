@@ -3,6 +3,6 @@
   "crs": "EPSG:3826",
   "tile_size_m": 500,
   "xy_quant_max": 65535,
-  "z_step_m": 0.00390625,
+  "z_step_m": 0.015625,
   "z_quant_max": 65535
 }

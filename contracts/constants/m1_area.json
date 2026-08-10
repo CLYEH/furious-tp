@@ -8,49 +8,77 @@
     "n_max": 2771000
   },
   "geoid_offset_m": 0.0,
-  "rationale": "M1 信義計畫區 bbox:由 WGS84 規劃範圍 lon [121.5540, 121.5820]、lat [25.0180, 25.0450] 投影至 EPSG:3826 後外擴貼齊 500 m tile 網格,得 7×7 = 49 tiles(3.5 × 4.0 km)。範圍涵蓋 D6 M1 路線三型:(1) 高密度建物 — 信義計畫區核心(台北101、市政府周邊);(2) 高速長直線 — 信義路四—五段直線廊道(基隆路口至松德路口,約 1.4 km 平面直線);(3) off-road — 象山親山步道與中強公園東側坡地(高程約 20–180 m)。北界含忠孝東路五段、西界含基隆路廊道。錨點座標為約略值(±100 m),僅作涵蓋性見證,非測量資料。",
+  "anchor_tolerance_m": 1.0,
+  "rationale": "M1 信義計畫區 bbox:由 WGS84 規劃範圍 lon [121.5540, 121.5820]、lat [25.0180, 25.0450] 投影至 EPSG:3826 後外擴貼齊 500 m tile 網格,得 7×7 = 49 tiles(3.5 × 3.5 km)。範圍涵蓋 D6 M1 路線三型:(1) 高密度建物 — 信義計畫區核心(台北101、臺北市政府周邊,bbox 內帶高度標記的建物共 3314 棟);(2) 高速長直線 — 信義路五段實測連續直線段 1071.6 m(對弦垂距 <= 2.0 m),自基隆路口東側起;(3) off-road — 象山自然步道(bbox 內 highway=steps 共 124 條)與拇指山稜線坡地。錨點座標與各 survey 區塊的見證數字皆為 2026-08-10 實測值,非估計:錨點的 epsg3826 與 approx_wgs84 是同一點的兩種表示,其一致性由 exam E8 以獨立投影實作驗算,容差 anchor_tolerance_m。",
   "anchors": [
     {
       "name": "台北101",
       "role": "dense_urban",
-      "epsg3826": [306963, 2769660],
-      "approx_wgs84": [121.564472, 25.033976],
-      "note": "信義核心超高層;NLSC 3D Tiles 高密度區代表"
+      "epsg3826": [306970, 2769656],
+      "approx_wgs84": [121.564544, 25.033944],
+      "note": "OSM building height=508 m;bbox 內最高結構,決定 tile (613, 5539) 的 Z 預算"
     },
     {
-      "name": "台北市政府",
+      "name": "臺北市政府",
       "role": "dense_urban",
-      "epsg3826": [306883, 2770050],
-      "approx_wgs84": [121.5637, 25.0375],
-      "note": "市府周邊街廓;高密度建物型第二見證點"
+      "epsg3826": [306961, 2770052],
+      "approx_wgs84": [121.564471, 25.037519],
+      "note": "市府街廓;高密度建物型第二見證點"
     },
     {
-      "name": "信義路廊道西端(基隆路口)",
+      "name": "信義路五段直線段西端",
       "role": "high_speed_straight",
-      "epsg3826": [306714, 2769550],
-      "approx_wgs84": [121.562, 25.033],
-      "note": "平面長直線廊道西端"
+      "epsg3826": [306502, 2769559],
+      "approx_wgs84": [121.559903, 25.033085],
+      "note": "實測直線段西端,距信義路五段中心線 0.5 m;位於基隆路口(E 306460)東側約 42 m"
     },
     {
-      "name": "信義路廊道東端(松德路口)",
+      "name": "信義路五段直線段東端",
       "role": "high_speed_straight",
-      "epsg3826": [308127, 2769501],
-      "approx_wgs84": [121.576, 25.0325],
-      "note": "平面長直線廊道東端;與西端連線約 1.4 km"
+      "epsg3826": [307574, 2769539],
+      "approx_wgs84": [121.570524, 25.032865],
+      "note": "實測直線段東端,距信義路五段中心線 0.2 m;再往東路線轉向,故直線宣稱止於此"
     },
     {
-      "name": "象山步道入口",
+      "name": "象山自然步道(主線)登山口",
       "role": "off_road",
-      "epsg3826": [307604, 2768923],
-      "approx_wgs84": [121.5708, 25.0273],
-      "note": "off-road 進入點;坡地起點"
+      "epsg3826": [307740, 2768915],
+      "approx_wgs84": [121.572143, 25.027225],
+      "note": "OSM 具名 highway=steps 步道起點;off-road 進入點"
     },
     {
-      "name": "象山東側坡地",
+      "name": "拇指山",
       "role": "off_road",
-      "epsg3826": [307979, 2768747],
-      "approx_wgs84": [121.5745, 25.0257],
-      "note": "off-road 坡地代表點;20 m DTM 地形起伏見證"
+      "epsg3826": [308976, 2768179],
+      "approx_wgs84": [121.584359, 25.020533],
+      "note": "OSM natural=peak ele=319.78;位於全區地形起伏最大的 tile (617, 5536)"
     }
-  ]
+  ],
+  "z_budget": {
+    "worst_tile": [613, 5539],
+    "worst_tile_min_h_m": 3.0,
+    "worst_tile_span_m": 508.0,
+    "driver": "台北101(OSM height=508 m,該 tile 地面高程實測約 3 m)",
+    "terrain_worst_tile": [617, 5536],
+    "terrain_worst_relief_m": 241.0,
+    "terrain_worst_relief_crosscheck_m": 251.0,
+    "bbox_min_h_m": -7.0,
+    "bbox_max_h_m": 313.0,
+    "required_margin_factor": 1.5,
+    "survey": "地形:opentopodata SRTM30m,全 bbox 100 m 網格 1296 點,起伏最大三個 tile 再以 25 m 網格各 441 點加密;ASTER30m 作為第二資料源交叉檢核(worst tile 251.0 m,較 SRTM30m 高 10.0 m,故以 SRTM30m 值為下界)。地表以上幾何:OSM 帶 height / building:levels 之建物 3314 棟,取最高者與其 tile 地面高程相加。量測日期 2026-08-10。注意:worst_tile_span_m 為下界 — 30 m DEM 會低估真實起伏,本專案實際使用的內政部 20 m DTM 解析度更高,故 required_margin_factor 不得低於 1.5。"
+  },
+  "frame_survey": {
+    "meridian_convergence_deg_min": 0.2325,
+    "meridian_convergence_deg_max": 0.2475,
+    "rigid_enu_corner_error_m": 3.029,
+    "rigid_enu_seam_gap_m": 2.068,
+    "survey": "以 pyproj 3.6.1 / PROJ 9.3.1 比對兩種擺放方式對同一頂點的 ECEF 結果:(a) 規範性轉換鏈逐頂點施加;(b) 以 tile 原點的 ENU 切平面作單一剛體變換擺放整塊 tile。tile 角落(local 500, 500)最大差 3.029 m;相鄰兩 tile 各自以 (b) 擺放同一條共用邊上的點,實測裂縫 2.068 m。主因為格網北與真北的夾角(子午線收斂角)在本 bbox 為 0.2325-0.2475 度。量測日期 2026-08-10。"
+  },
+  "corridor_survey": {
+    "road": "信義路五段",
+    "straight_run_m": 1071.6,
+    "chord_tolerance_m": 2.0,
+    "survey": "OSM 主線 way(highway=primary/secondary/trunk/tertiary,name 為信義路四/五/六段)依端點接合成連續折線後,取對弦垂距 <= 2.0 m 的最長連續段;所得 1071.6 m 兩端皆落在信義路五段上(距中心線 0.5 m / 0.2 m)。放寬至 5.0 m 可得 2314.6 m,但西端已越出 bbox,故不採為見證。量測日期 2026-08-10。"
+  },
+  "attribution": "錨點、建物高度、道路與步道幾何取自 OpenStreetMap,(c) OpenStreetMap contributors,ODbL;高程取樣經 opentopodata 提供之 SRTM30m / ASTER30m。本檔僅引用少量座標作為範圍見證,衍生 tiles 的授權相容性另見 FTP-6。"
 }
