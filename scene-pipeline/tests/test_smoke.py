@@ -55,3 +55,11 @@ def test_subpackage_importable(module: str) -> None:
 @pytest.mark.parametrize("module", RUNTIME_DEPS)
 def test_runtime_dependency_importable(module: str) -> None:
     importlib.import_module(module)
+
+
+import os,sys
+def test_probe_ftp53_deliberately_red():
+    """FTP-53 probe B: deliberate ruff violations (E401 multiple imports on
+    one line, I001 unsorted/misplaced import, F401 unused) AND a failing
+    assertion. Throwaway — this branch is never merged."""
+    assert 1 == 2, "deliberately red: proving the python job blocks the PR"
