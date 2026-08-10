@@ -55,3 +55,10 @@ def test_subpackage_importable(module: str) -> None:
 @pytest.mark.parametrize("module", RUNTIME_DEPS)
 def test_runtime_dependency_importable(module: str) -> None:
     importlib.import_module(module)
+
+
+def test_probe_ftp53_pytest_gate_blocks():
+    """FTP-53 probe D: ruff-clean but deliberately failing, to prove the
+    pytest step blocks on its own. Probe B failed at ruff, so pytest never
+    ran there. Throwaway — this branch is never merged."""
+    assert 1 == 2, "deliberately red: proving the pytest step blocks the PR"
