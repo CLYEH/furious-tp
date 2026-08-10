@@ -408,6 +408,26 @@ check("B13", "boundary heights are exactly representable on both sides of a seam
   }
 });
 
+check("B14", "M1 budget table rows agree with constants (tile, span, share)", () => {
+  const g = readJson("constants/grid.json");
+  const z = readJson("constants/m1_area.json").z_budget;
+  const span = g.z_quant_max * g.z_step_m;
+  const lines = readText("spec/grid.md").split("\n");
+  // B-1 was a derived figure contradicting a frozen value; the same class of
+  // defect in this table must not be possible either.
+  for (const [tile, value] of [
+    [z.terrain_worst_tile, z.terrain_worst_relief_m],
+    [z.worst_tile, z.worst_tile_span_m],
+  ]) {
+    const id = `(${tile[0]}, ${tile[1]})`;
+    const row = lines.find((l) => l.trim().startsWith("|") && l.includes(id));
+    assert(row, `budget table has no row for tile ${id}`);
+    assert(citesNumber(row, value), `budget row for ${id} must cite ${value} m`);
+    const pct = ((value / span) * 100).toFixed(1);
+    assert(row.includes(`${pct}%`), `budget row for ${id} must state ${pct}% of the span`);
+  }
+});
+
 // ---------------------------------------------------------------------------
 // error — independent recomputation; domain guards; doc/number drift
 // ---------------------------------------------------------------------------
