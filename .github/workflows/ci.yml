@@ -129,6 +129,12 @@ jobs:
           expect "nested scene-pipeline path is not the pipeline" \
             "docs/scene-pipeline/notes.md" \
             "gates=false docs=true python=false"
+          # Same trap as above but on a non-docs path, so the docs-only guard
+          # cannot mask an unanchored match. Added after mutation testing:
+          # dropping the ^ anchor survived the table without this case.
+          expect "nested scene-pipeline path outside docs is not the pipeline" \
+            "web-client/src/scene-pipeline/x.ts" \
+            "gates=true docs=false python=false"
           expect "workflow-only PR (this ticket) runs npm gates only" \
             ".github/workflows/ci.yml" \
             "gates=true docs=false python=false"
