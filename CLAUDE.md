@@ -10,7 +10,7 @@
 
 ## Commands (web-client)
 
-```
+```bash
 cd web-client
 npm run lint / typecheck / build / test
 ```
