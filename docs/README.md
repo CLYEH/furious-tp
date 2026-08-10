@@ -1,0 +1,23 @@
+# Docs 索引
+
+專案文件的入口。新增任何文件時,同一個 PR 必須更新本索引。
+
+## 環境與流程
+
+- [TEST-ENV.md](TEST-ENV.md) — test 環境:URL、部署流程、前置條件、本機 e2e
+- [RELEASE.md](RELEASE.md) — 發布機制與 post-release 門檻(R-tier)
+- [SECRETS.md](SECRETS.md) — secrets 結構與命名慣例(值不進 repo)
+
+## 支援範圍
+
+- [BROWSERS.md](BROWSERS.md) — 瀏覽器/裝置支援矩陣(Chrome 主測)
+
+## 調查(spikes)
+
+- `spikes/` — 動工前查證報告(NLSC 服務、授權相容性;隨 FTP-5/FTP-6 產出)
+
+## Repo 根目錄的治理檔
+
+- [`CLAUDE.md`](../CLAUDE.md) — 專案指示與 agent 工作規則
+- [`DESIGN.md`](../DESIGN.md) — 視覺設計規範(canonical design.md 格式)
+- 需求與架構(PRD/RFC):Linear 專案「臺北開放資料 3D 數位孿生城市」文件
