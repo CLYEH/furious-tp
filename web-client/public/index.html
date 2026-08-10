@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>furious-tp — test environment</title>
+  </head>
+  <body>
+    <h1>furious-tp — test environment</h1>
+    <p>臺北開放資料 3D 數位孿生(M0 scaffold)。</p>
+    <p id="probe">loading…</p>
+    <script type="module">
+      import { greet } from "./dist/index.js";
+      document.getElementById("probe").textContent = greet("test-env");
+    </script>
+  </body>
+</html>

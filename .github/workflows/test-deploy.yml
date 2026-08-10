@@ -1,0 +1,72 @@
+# e2e harness (Milestone 0, FTP-14): every push to `test` builds web-client,
+# deploys it to GitHub Pages (the test environment), then runs the Playwright
+# smoke against the deployed URL. `test` is synced from `develop` by the
+# merging agent (development-workflow §4). Repo prerequisite (provisioned at
+# bootstrap): Pages build_type=workflow, and the github-pages environment's
+# deployment-branch-policies must include `test`.
+name: test-deploy
+
+on:
+  push:
+    branches: [test]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    outputs:
+      page_url: ${{ steps.deployment.outputs.page_url }}
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: web-client/package-lock.json
+      - run: npm ci
+        working-directory: web-client
+      - run: npm run build
+        working-directory: web-client
+      - name: Assemble site
+        run: |
+          mkdir -p site
+          cp -r web-client/public/. site/
+          cp -r web-client/dist site/dist
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+      - id: deployment
+        uses: actions/deploy-pages@v4
+
+  smoke:
+    needs: deploy
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web-client
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: web-client/package-lock.json
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: npm run e2e
+        env:
+          TEST_URL: ${{ needs.deploy.outputs.page_url || 'https://clyeh.github.io/furious-tp/' }}
