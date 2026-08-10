@@ -1,9 +1,10 @@
 # Spike R1:NLSC 三維國家底圖 3D Tiles 服務可行性實測與條款查證
 
-> **狀態**:完成 — 結論:**直串不可行,且 Plan B(caching proxy)無法補救**(缺陷在來源端)。已觸發 `[escalate]` + `needs-human`。
+> **狀態**:完成 — 結論:**直串可行(direct streaming)**,依據為建物服務代碼 **22**。
+> **⚠ 本報告經 round-2 更正**:初版結論為「不可行 + Plan B 無法補救 + 架構前提被推翻」,**該結論錯誤且已撤回**。更正始末與錯在哪裡見 [§10](#10-round-2-更正紀錄)。
 > **Ticket**:FTP-5(RFC v2 R1,阻擋性)
 > **性質**:工程盡職調查(engineering due diligence),**非正式法律意見**。
-> **實測日期**:2026-08-10(所有 header / payload 皆為當日取回)
+> **實測日期**:2026-08-10(初版與 round-2 同日;round-2 的每一項數字皆為本輪重新量取,未沿用他人結論)
 > **產物**:本報告 + 可重跑量測 script [`nlsc-probe.mjs`](nlsc-probe.mjs)(實驗用,不進正式模組;自我測試 [`nlsc-probe.selftest.mjs`](nlsc-probe.selftest.mjs))
 > **關聯**:結論決定 `LICENSING.md`(FTP-6)的 NLSC 條目、FTP-39(client 串流)、FTP-51(hosting)
 
@@ -37,6 +38,7 @@
 - [x] 實測結果:延遲統計(p50/p95)、狀態碼分佈、是否觸發限流/封鎖
 - [x] 樣本不足時輸出 `insufficientSamples` 而非假統計
 - [x] script 自我測試(local fake server,不打真實服務)全綠,並記錄輸出
+- [x] **(round-2 追加)** 量測對象為**建物圖層本身**,而非替代圖層
 
 ### AC4 — tileset 改版偵測(RFC D5)
 
@@ -44,13 +46,15 @@
 - [x] 服務端是否另有版本欄位可用(附證據)
 - [x] 圖資更新頻率之官方說明(附條文出處)
 - [x] 指紋機制建議:資料來源、比對方式、告警條件、誤報風險
+- [x] **(round-2 追加)** 指紋在可解碼端點上實測穩定性(初版因取不到內容而無法驗證)
 
 ### AC5 — 三擇一結論
 
 - [x] 結論明確落在「直串可行 / 需 caching proxy(Plan B)/ 不可行」其一,附推理
 - [x] 建議事項可執行(對應到後續 ticket)
-- [x] 若結論為「不可行」:已發 `[escalate]` + `needs-human`
+- [x] **(round-2 更正)** 初版誤判為「不可行」並發出 `[escalate]`;結論已更正為**直串可行**,`[escalate]` 已由 operator 於 ticket 撤回,本報告內文同步更正(§10)
 - [x] `[progress]` 摘要已 post 於 FTP-5
+- [x] **(round-2 追加)** 代碼 22 的**現勢性與 LOD 是否堪用**,以自行取得之證據作出明確結論(§6.2)
 
 ## 0. 服務端點定位(一手出處)
 
@@ -71,19 +75,28 @@ curl -sS -X POST -H "Content-Length: 0" \
 >
 > (三) 服務代碼⋯⋯臺北市 **0**
 
-道路服務同規則:`.../road/tiles3d/<代碼>/tileset.json`(原始成果版)、`.../road2nd/tiles3d/<代碼>/tileset.json`(地形貼合版);表中臺北市(代碼 0)**未列為灰色**(灰色 = 暫無成果範圍),即官方宣告臺北市有成果。
+道路服務同規則:`.../road/tiles3d/<代碼>/tileset.json`(原始成果版)、`.../road2nd/tiles3d/<代碼>/tileset.json`(地形貼合版)。
 
-服務清單 `https://3dtiles.nlsc.gov.tw/tiles3d/Service`(200,13,176 bytes,可正常解析)確實列出:
+### 0.1 服務清單:臺北市有**兩個**建物圖層
+
+服務清單 `https://3dtiles.nlsc.gov.tw/tiles3d/Service`(2026-08-10 round-2 實測:200、**未壓縮**、12,380 bytes,可正常解析)共 70 筆:建物 24、道路(原始成果版)22、道路(地形貼合版)22、試辦地形 2。建物服務代碼實際存在 0–22 與 26。
+
+其中**臺北市有兩筆建物圖層**:
 
 ```json
 {"Name": "臺北市建物模型 ( Taipei City Building Model )",
  "Url": "https://3dtiles.nlsc.gov.tw/building/tiles3d/0/tileset.json"}
+{"Name": "臺北市建物模型 1.0 版 ( Taipei City Building Model v1.0 )",
+ "Url": "https://3dtiles.nlsc.gov.tw/building/tiles3d/22/tileset.json"}
 ```
 
-清單另含 24 個建物圖層、22 個道路圖層(×2 版本)與 2 個試辦地形圖層
-(`Terrain20M`,正射影像/電子地圖)。
+**初版報告只寫「清單另含 24 個建物圖層」便略過了第二筆,這是本報告初版結論錯誤的直接成因**(§10)。
+
+**治理面須留意**:`tabidx=10` 的「服務代碼」對照表只列到 21(臺北市 0 ⋯ 連江縣 21),**代碼 22 並未出現在官方文件化的代碼表中**——它存在於官方服務清單、可正常服務,但屬**未文件化**的端點。此為殘餘風險,見 §6.3。該 CMS 內容亦**無任何「版次」或「更新日期」欄位**,故代碼 22 的現勢性只能由 payload 自身推定(§6.2)。
 
 ## 1. AC1 — 條款查證
+
+> round-2 註記:本節所有條文於 2026-08-10 round-2 由本 session 重新取回原文核對,結論不變;另補入初版遺漏的「使用回饋」條款(§1.6)。
 
 ### 1.1 治理文件本身
 
@@ -94,7 +107,7 @@ curl -sS -X POST -H "Content-Length: 0" \
   "https://3dmaps.nlsc.gov.tw/NLSC/API/SearchFromSQL?type=GetAllCard&tabidx=2&query=true"
 ```
 
-原文(2026-08-10 取回,逐條引用):
+原文(逐條引用):
 
 > 內政部國土測繪中心(以下簡稱本中心)多維度國家空間資訊服務平臺(以下簡稱本服務),系統網址為 `https://3dmaps.nlsc.gov.tw`,當您使用本服務時即代表無條件同意本使用條款。
 >
@@ -141,6 +154,8 @@ curl -sS -X POST -H "Content-Length: 0" \
 
 **結論:線上 3D Tiles 服務之商用許可,無法由一手來源確立,標記 `unverified`。** 若要公開發布商用/準商用產品,建議以正式函詢取得 NLSC 書面確認(見建議 R4)。
 
+**代碼 22 可用不改變本結論** —— 授權面與服務健康度是兩件事。
+
 ### 1.3 轉載 / 快取限制 — **條款未規範(`unverified`)**
 
 服務使用條款**沒有任何條文**規範使用者端快取、代理(proxy)、鏡像或再散布 tile 內容。既無禁止,也無許可。與此相關的只有兩條間接條文:
@@ -148,7 +163,7 @@ curl -sS -X POST -H "Content-Length: 0" \
 - 第五點「本服務是不可移轉的(non-transferable)」— 文義指向**服務本身**(存取權)不得移轉,而非產出資料不得再散布;逐字解讀無法支撐「禁止快取」的結論。
 - 第三點「本服務將會不斷更新,因此,您也可能需要配合適時適度修改您的網頁」— 隱含**要求跟隨最新版本**,對長期快取構成規範上的張力(快取愈久,愈偏離「不斷更新」的前提)。
 
-**重要脈絡(對 Plan B 具決定性)**:臺北市的三維建物模型是 NLSC **整合自臺北市既有成果**,而非 NLSC 自行產製:
+**重要脈絡**:臺北市的三維建物模型是 NLSC **整合自臺北市既有成果**,而非 NLSC 自行產製:
 
 > (108年度)2. 整合臺北市及桃園市完整區域與新北市及高雄市部分區域之既有三維建物模型(LOD1)。
 > (109年度)2. 整合臺北市完整區域更新之既有三維建物模型(LOD1)。(`tabidx=3`)
@@ -158,6 +173,8 @@ curl -sS -X POST -H "Content-Length: 0" \
 > 資料範圍:全國(**臺北市不供應;請逕洽臺北市政府資訊局**)(`tabidx=7`,離線與線上申請兩處皆同)
 
 → NLSC **不以任何離線管道供應臺北市建物資料**,並將需求導向臺北市政府資訊局。任何「自行取得副本並自託管」的路線,對臺北市而言不能經由 NLSC 取得授權,必須另尋臺北市政府之來源與授權。此點同時解釋了 FTP-6 記錄的 [data.gov.tw 民眾需求 136485](https://data.gov.tw/suggests/136485) 之陳情內容。
+
+**注意**:本專案的既定路線是**直串官方服務**(§6),不自託管副本,因此本節對 M1 不構成阻擋;它拘束的是「自行散布副本」這條備援路線。
 
 ### 1.4 標示要求
 
@@ -175,9 +192,23 @@ curl -sS -X POST -H "Content-Length: 0" \
 - 「今日未被限流」不得寫入架構假設,任何依賴穩定吞吐的設計都缺乏條款支撐;
 - 反過來,這也是量測必須克制的規範理由(script 內建 2 req/s 硬上限、遇 429 立即中止)。
 
+### 1.6 離線管道的附帶義務(僅拘束 R3 那條路線)
+
+`tabidx=7`「(五)其他事項」除顯名聲明外,尚有兩項初版未記錄的義務,對「自行取得副本自託管」(R3)有直接影響:
+
+> 2.使用回饋:(1)申請人應於申請書所填回饋期限內,填具「三維圖資成果資料使用效益調查表」⋯⋯以電子檔型式逕傳本中心。**(2)申請人應依本中心需要,將加值成果以適當方式或形態無償回饋本中心參考。**
+>
+> 3.圖資管理及銷毀:(1)倘需委託辦理資料處理,應於委託事務辦竣後收回資料,受託人應製作資料銷毀紀錄,確實銷毀相關資料,不得留存。
+
+→ 走離線申請管道即承擔「加值成果無償回饋」與「委外處理後銷毀」義務。**本專案採直串路線,不觸發這些條件**;但若日後改走自託管,須連同這兩項一併評估。
+
+同節亦載明問題反映窗口(R1 的收件對象):
+
+> 4.問題反映及聯繫 (1)**線上瀏覽及服務介接相關問題**,請利用首頁「意見回饋及問題反映」反映,或將相關資訊及畫面截圖寄送至 `23207@mail.nlsc.gov.tw`。(2)實體資料離線供應相關問題,請將相關資訊寄送至 `23146@mail.nlsc.gov.tw`。
+
 ## 2. AC2 — CORS 實測
 
-**本 session 沒有 browser 工具,以下全部為 `curl` 取得的一手 response header。**
+**本 session 沒有 browser 工具,以下全部為 HTTP 層取得的一手 response header。**
 
 ### 2.1 preflight(`OPTIONS`)— 失敗(405)
 
@@ -197,79 +228,127 @@ access-control-allow-methods: *
 access-control-allow-credentials: true
 ```
 
-真實 tile payload(`.../Terrain20M/tiles3d/電子地圖/0/0/0/tile.b3dm`)的 preflight 結果完全相同(405 + `allow: GET`)。
+真實 tile payload 的 preflight 結果完全相同(405 + `allow: GET`)。
 
 **判定**:依 Fetch 規範,preflight 必須回 ok-status(200–299)才算通過;405 **不通過**,即使帶了 `Access-Control-Allow-*`。→ **任何會觸發 preflight 的跨域請求都會被瀏覽器擋下**(自訂 header、非簡單方法等)。3D Tiles client 的預設請求是 simple GET,不觸發 preflight,故此限制在預設路徑上不致命,但**排除了任何需要自訂 header 的用法**。
 
 ### 2.2 實際 GET(帶 `Origin`)— 允許跨域
 
-`tileset.json`:
+**可用端點(代碼 22)的 `tileset.json`**,round-2 實測:
 
 ```text
 HTTP/1.1 200 OK
-cache-control: no-cache,no-store
 content-type: application/json; charset=utf-8
 content-encoding: gzip
-set-cookie: session-id=9996984d-1f13-41b7-b2bc-193f27e35f8c
+content-length: 3176361
+cache-control: no-cache,no-store
+x-aspnet-version: 4.0.30319
 access-control-allow-origin: *
-access-control-allow-headers: *
-access-control-allow-methods: *
 access-control-allow-credentials: true
 ```
 
-真實 tile payload `tile.b3dm`(98,056 bytes,magic 驗證為 `b3dm`):
+**真實葉節點 tile**(`building/tiles3d/22/0_2_1_3_3_0_3_3_0_0_0.b3dm`,gzip 79,700 → 104,784 bytes,magic 驗證為 `b3dm`):
 
 ```text
 HTTP/1.1 200 OK
-content-type: application/octet-stream; charset=utf-8
-content-length: 98056
+content-type: text/html
+content-encoding: gzip
+content-length: 79700
 cache-control: no-cache,no-store
 access-control-allow-origin: *
 access-control-allow-credentials: true
 ```
+
+損毀端點(代碼 0)的 header 形狀相同,亦帶 `access-control-allow-origin: *` 與 `set-cookie: session-id=<uuid>`。
 
 ### 2.3 判定與界限
 
-1. **跨域讀取本身成立**:`ACAO: *` 出現在 tileset 與 tile payload 的實際 GET 上,無 `Vary: Origin`。
+1. **跨域讀取本身成立**:`ACAO: *` 出現在 tileset 與真實 tile payload 的實際 GET 上,無 `Vary: Origin`。
 2. **不得使用 credentials 模式**:`ACAO: *` 與 `access-control-allow-credentials: true` 併存;瀏覽器在 `credentials: "include"` 時會拒絕萬用字元來源。Cesium 預設不送 credentials → 可用,但 client 設定中**不得**開啟 `withCredentials`。
 3. **不得觸發 preflight**(見 2.1)。
 4. 服務對**每個** response 下 `set-cookie: session-id=...`(無 `SameSite`/`Secure`),跨站 subresource 情境下瀏覽器不會採用;對 client 無影響,但顯示服務端維持每請求 session 狀態。
+5. **`.b3dm` 的 `content-type` 是 `text/html`(伺服器設定錯誤)**。CesiumJS 依 magic bytes 判讀 tile 內容,不受影響;但 FTP-39 若自行以 `content-type` 分派解析器會踩到。已知並記錄,非阻擋。
 
 ### 2.4 未執行事項(誠實揭露)
 
-**我沒有在真實瀏覽器中載入過這個 tileset,也不宣稱做過。** 上述為 HTTP 層證據。仍需補做、且應由**能操作瀏覽器的人**執行的項目:
+**我沒有在真實瀏覽器中載入過這個 tileset,也不宣稱做過。** 上述為 HTTP 層與 payload 結構層證據(magic / `byteLength` 自洽 / 內嵌 glTF offset 正確)。**「結構正確」不等於「CesiumJS 一定跑得起來」**,仍需補做:
 
-- 於 Chrome DevTools 實際以 `fetch()`/CesiumJS 跨域載入,確認無 console CORS 錯誤;
+- 於 Chrome DevTools 實際以 `fetch()`/CesiumJS 跨域載入代碼 22,確認無 console CORS 錯誤;
 - 確認 §2.1 的 preflight 限制在 CesiumJS 實際請求路徑上未被觸發。
 
-**指派建議**:由 operator(human)在 FTP-39 動工前執行,或併入 FTP-39 的第一項驗收(該票本就要求「建物顯示截圖」)。**但在第 3 節的缺陷修復前,這件事無法完成**——沒有可解析的 tileset.json,瀏覽器連載入都無從開始。
+**指派建議**:併入 FTP-39 的第一項驗收(該票本就要求「信義 bbox 顯示 NLSC 建物」的截圖)。
+**round-2 更正**:初版寫「在缺陷修復前這件事無法完成」——**該敘述已不成立**,代碼 22 的 tileset 今日即可解析,FTP-39 沒有技術前提待解。
 
-## 3. 阻擋性發現:`tileset.json` 回應無法解碼
+## 3. 服務健康度:可用端點、損毀端點與資安發現
 
-### 3.1 現象
+> **round-2 全節重寫。** 初版把「代碼 0 壞掉」推廣為「服務不可行」,並把缺陷邊界描述成「落在被 gzip 壓縮的 `tileset.json`」——兩者皆錯。
+
+### 3.1 可用:建物服務代碼 22(端到端實測)
+
+可重跑指令:
 
 ```sh
 node --use-system-ca docs/spikes/nlsc-probe.mjs --mode=integrity \
-  --url=https://3dtiles.nlsc.gov.tw/building/tiles3d/0/tileset.json --samples=2 --rps=1
+  --url=https://3dtiles.nlsc.gov.tw/building/tiles3d/22/tileset.json --samples=3 --rps=1
 ```
 
-輸出(節錄,exit code 4):
+輸出(exit code **0**,節錄):
 
 ```json
 {
-  "integrity": { "attempts": 2, "decodable": 0,
-    "defects": [{ "kind": "corrupt_content_encoding", "declared": "gzip",
-                  "detail": "incorrect header check", "rawNulByteRatio": 1 }] },
+  "requests": { "total": 3, "ok": 3, "rateLimited": 0, "transportError": 0 },
+  "integrity": { "attempts": 3, "decodable": 3, "defects": [] },
   "versionSignals": { "etag": null, "lastModified": null,
-                      "cacheControl": "no-cache,no-store" }
+                      "cacheControl": "no-cache,no-store",
+                      "bodyStableAcrossSamples": true },
+  "findings": []
 }
 ```
 
-- 臺北市建物 `building/tiles3d/0/tileset.json`:HTTP 200、`content-length: 2775617`、`content-encoding: gzip`,body **100% 為 NUL bytes**(`rawNulByteRatio: 1.0`),兩次取樣 `sha256` 相同。
-- 臺北市道路 `road2nd/tiles3d/0/tileset.json`:HTTP 200、`content-length: 418458` 固定,body **~99% NUL**,且 4 次取樣出現**兩種不同的 sha256**(內容逐次變動而長度不變,型態近似未初始化緩衝區)。
-- 臺中市(代碼 1,13,440,439 bytes)、新北市(代碼 5,6,597,984 bytes)同樣為全 NUL body → **非臺北市專屬**。
+**tileset 結構(自行解析,非引用他人數字)**:
 
-### 3.2 排除本機/本網路因素(此為結論可靠性的關鍵)
+| 項目 | 實測值 |
+|---|---|
+| HTTP | 200、`content-encoding: gzip`、`content-length: 3,176,361` |
+| raw body NUL 比例 | 0.0039(正常 gzip 資料流) |
+| gunzip 後 | **16,068,240 bytes**,`JSON.parse` 成功 |
+| `asset.version` | `1.0` |
+| `geometricError`(root) | 857.226322419942 |
+| `root.refine` | `REPLACE` |
+| `root.content.uri` | `0.b3dm` |
+| tile 節點數 | **85,209**(全部帶 content) |
+| 樹深 | 1–12;`geometricError` 逐層折半 857.226 → 0.419 |
+| root `boundingVolume.sphere` | 半徑 **17,272.25 m**,中心 ≈ 121.5561E / 25.0845N |
+| 信義路線四點 | **全部落在 root sphere 內** |
+| 三次取樣 | `rawSha256`、`decodedSha256` 皆完全相同 |
+
+**真實葉節點驗證**(自行沿 bounding volume 下降至信義區,取 depth 11、`geometricError` 0.837 的葉節點 `0_2_1_3_3_0_3_3_0_0_0.b3dm`):
+
+| 項目 | 實測值 |
+|---|---|
+| HTTP | 200、gzip 79,700 → **104,784 bytes** |
+| magic / version | `b3dm` / 1 |
+| `byteLength` 欄位 | 104,784(**與實際長度自洽**) |
+| feature table | `{"RTC_CENTER":[…],"BATCH_LENGTH":3}` |
+| 內嵌 glTF | offset 880 處 magic `glTF`,glTF 2.0,JSON chunk 14,840 bytes |
+| CORS | `access-control-allow-origin: *` |
+
+→ **從 root tileset 到葉節點 glTF,整條路徑今日可由匿名瀏覽器跨域直接取得。不需要 proxy,不需要後端。**
+
+### 3.2 損毀:建物代碼 0 與道路貼合版代碼 0
+
+round-2 重新量測,兩者**仍然損毀**:
+
+| 端點 | HTTP | `content-length` | raw NUL 比例 | gunzip |
+|---|---|---|---|---|
+| `building/tiles3d/0/tileset.json` | 200 gzip | 2,775,617 | **1.0000**(全 NUL) | `incorrect header check` |
+| `road2nd/tiles3d/0/tileset.json` | 200 gzip | 418,458 | 0.9821 / 0.9997(逐次不同) | `incorrect header check` |
+
+`road2nd/0` 相隔 4 秒的兩次取樣:`content-length` 同為 418,458,**內容有 7,511 bytes 不同**。內容逐次變動而長度固定 → 回應體是**未初始化/被回收的緩衝區**,不是損壞的資料檔。此性質是 §3.5 的基礎。
+
+初版另記錄臺中市(代碼 1)、新北市(代碼 5)亦為全 NUL body。**該兩筆為初版量測,round-2 未重驗**(依「不廣掃服務代碼」的克制原則),沿用時請注意。
+
+### 3.3 排除本機/本網路因素
 
 | 檢驗 | 結果 |
 |---|---|
@@ -278,36 +357,74 @@ node --use-system-ca docs/spikes/nlsc-probe.mjs --mode=integrity \
 | Node 24 `http2`(ALPN h2) | 同樣收到 2,775,617 個 NUL bytes |
 | 對照組:npm registry `/express`(gzip) | 正常,magic `1f8b0800` |
 | 對照組:`data.gov.tw/license`(gzip) | 正常,magic `1f8b0800` |
-| **不同網路的第三方抓取服務**(`r.jina.ai`) | 取同一 URL 回 `Failed to access ... Unrecognized or bad HTTP Content or Transfer-Encoding`(CURLE 61)——**與本機同因** |
+| **不同網路的第三方抓取服務**(`r.jina.ai`) | 取同一 URL 回 CURLE 61 ——**與本機同因** |
 | `r.jina.ai` 取同主機**未壓縮**的小 tileset | **成功**,回傳正常 JSON |
 
-→ 三個獨立 HTTP 實作 + 一個獨立網路路徑一致失敗;同主機未壓縮回應在同一路徑上成功。**缺陷在服務端,不在本機。**
+已嘗試且無效的繞道:`Accept-Encoding: identity`(服務仍回 gzip)、`Range`(忽略,回完整 body)、query cache-bust、瀏覽器 User-Agent、`Origin`/`Referer` 偽裝、HTTP/2、重複請求。
 
-### 3.3 已嘗試且無效的繞道
+→ 三個獨立 HTTP 實作 + 一個獨立網路路徑一致失敗。**缺陷在服務端,不在本機。**
 
-`Accept-Encoding: identity`(服務仍回 gzip)、`Range: bytes=0-2047`(忽略 Range,回完整 body)、query string cache-bust、瀏覽器 User-Agent、`Origin`/`Referer` 偽裝、HTTP/2、重複請求(5 次,均失敗且內容不同)。
+### 3.4 缺陷邊界:**per-service-code,不是 per-compression**
 
-### 3.4 缺陷邊界
+初版斷言「缺陷精確落在 `3dtiles.nlsc.gov.tw` 上**被壓縮的 `tileset.json`**」。**這是錯的**,且它正是把「代碼 0 壞掉」誤推為「服務不可行」的橋樑。round-2 以同主機、同為 gzip 的四個端點重新推導:
 
-| 端點 | 是否 gzip | 結果 |
-|---|---|---|
-| `3dtiles.../tiles3d/Service`(服務清單) | 否 | **正常** |
-| `3dtiles.../Terrain20M/.../0/0/0/tileset.json`(987 bytes) | 否 | **正常** |
-| `3dtiles.../Terrain20M/.../tile.b3dm`(98 KB 二進位) | 否 | **正常**(magic `b3dm`) |
-| `3dtiles.../building/tiles3d/{0,1,5}/tileset.json` | 是 | **損毀** |
-| `3dtiles.../road2nd/tiles3d/0/tileset.json` | 是 | **損毀** |
-| `i3s.nlsc.gov.tw/building/i3s/SceneServer/layers/0` | 是 | **正常**(不同主機) |
+| 端點 | gzip | `content-length` | 結果 |
+|---|---|---|---|
+| `building/tiles3d/22/tileset.json` | 是 | 3,176,361 | **正常** → 16,068,240 bytes JSON |
+| `building/tiles3d/0/tileset.json` | 是 | 2,775,617 | **損毀**(全 NUL) |
+| `road/tiles3d/0/tileset.json` | 是 | 418,890 | **正常** → 1,987,274 bytes JSON(`asset.version 1.1`) |
+| `road2nd/tiles3d/0/tileset.json` | 是 | 418,458 | **損毀**(~98% NUL,逐次變動) |
 
-缺陷精確落在 `3dtiles.nlsc.gov.tw` 上**被壓縮的 `tileset.json`**。同一份資料經 I3S 主機供應時完好,顯示**資料存在、是 3D Tiles 的傳遞環節壞掉**。
+兩個假解釋同時被排除:
 
-### 3.5 資料本身存在(反證「臺北市無資料」的可能解釋)
+- **不是壓縮造成的**:四者皆宣告 gzip,兩者正常、兩者損毀。
+- **不是檔案大小造成的**:損毀的 `building/0`(2.78 MB)比正常的 `building/22`(3.18 MB)**還小**。決定性對照是最後兩列——`road/0` 與 `road2nd/0` 的 `content-length` **只差 432 bytes**(418,890 vs 418,458),同主機、同編碼、同內容型別,一個正常、一個損毀。
+- **也不是圖層類別造成的**:建物與道路各自都同時存在正常與損毀的代碼。
+
+**正確結論:損毀是逐一服務代碼(逐份儲存副本)的個別現象。** 兩個損毀端點的失效樣態還不相同——`building/0` 是 100% NUL 且逐次穩定,`road2nd/0` 是 ~98% NUL 且逐次變動——這也不支持「單一系統性轉換出錯」的解釋,而支持「個別副本/個別回應緩衝區出問題」。
+
+**這改變 R1 該向 NLSC 說什麼**:報「gzip 傳遞環節壞掉」會把對方導向錯誤的排查方向。正確說法是「**代碼 0(建物)與 road2nd 代碼 0 的回應損毀,同主機的 building 代碼 22 與 road 代碼 0 正常**」。
+
+### 3.5 資安:損毀端點正在把**伺服器行程記憶體**回給匿名呼叫者
+
+初版把 `road2nd/0` 的現象寫成「型態近似未初始化緩衝區」。**這個描述低估了嚴重度。** round-2 對回應中的非 NUL 殘留做了**分類分析(不保留、不轉載內容)**,結果:
+
+| 觀察(取樣 A,單次回應) | 值 |
+|---|---|
+| 非 NUL 位元組 | 7,497 bytes,分佈於 1,155 個不連續區段,最長區段 257 bytes |
+| Windows x64 使用者空間位址形狀的 8-byte word | 379 個 |
+| X.509 OID 形狀字串(相異) | 6 個,含 **TWCA 的 policy OID 弧**、CA/Browser Forum 的 `2.23.140.1.2.2`、以及 X.509 EKU 弧 |
+| UTF-16LE 可列印字串區段 | 1 段、31 字元(內容為 Windows 通道加密提供者名稱,屬作業系統常數) |
+| ASCII 可列印區段 | 159 段 |
+
+取樣 B(4 秒後)只剩 106 bytes 非 NUL、0 個 OID、0 段 UTF-16LE。**同一端點、同一長度,殘留量與內容逐次劇烈變動。**
+
+綜合判讀:回應主體是一塊**被重複使用的行程記憶體**,其內容隨伺服器當下處理的工作而變。來源端為 IIS(`x-aspnet-version: 4.0.30319`),TLS 鏈為真實 TWCA 憑證(已驗,無中間人),故這些位元組**來自伺服器行程本身**,而非傳輸途中被竄改。
+
+**這是資訊洩漏(information disclosure),不是單純的內容損毀**:
+
+- 洩漏對象是**匿名、未認證**的任何人;
+- 洩漏內容**逐次不同**,今日觀察到的是 TLS/憑證處理相關結構,但沒有任何機制保證下一次不是**其他使用者的請求資料**;
+- 洩漏的位址類資訊會削弱 ASLR 的防護價值。
+
+**處置原則(本報告已遵守)**:
+
+- 本報告**不轉載任何殘留位元組的內容**,只描述類別與計數。轉載等同二次散布可能含他人資料的內容。
+- 位址值一律不記錄。
+- [`nlsc-probe.mjs`](nlsc-probe.mjs) 對回應主體只輸出長度、NUL 比例與 sha256,**從不輸出主體內容**;此性質已由 self-test 釘住(`response bodies are never echoed to stdout, only characterised`),避免日後修改把探測工具變成散布工具。
+- 詳細技術特徵應於通報時**直接、私下**提供給 NLSC,不寫在公開 repo。
+
+→ **R1 因此升級為資安通報,而非一般缺陷回報**(§7)。此事**不因代碼 22 可用而消失**:端點仍在對外洩漏記憶體。**發送通報是 human 的動作,本 session 不執行。**
+
+### 3.6 I3S:同一份資料的第三條管道
 
 ```sh
-curl -sS https://i3s.nlsc.gov.tw/building/i3s/SceneServer/layers/0   # 200, 2107 bytes, gzip 正常
+curl -sS https://i3s.nlsc.gov.tw/building/i3s/SceneServer/layers/0   # 200, gzip 正常
 ```
 
-解出的圖層文件:`name: "臺北市"`、`store.extent: [121.4489, 24.9451, 121.6737, 25.2236]`(涵蓋信義區
-121.56–121.58 / 25.02–25.04)、`version: "646e7c8c-44f5-4ad5-83fd-4df03e7173f3"`、`capabilities: ["View","Query"]`。
+解出的圖層文件:`name: "台北市"`(原文為異體字「台」,逐字引用)、`store.extent: [121.4489, 24.9451, 121.6737, 25.2236]`(涵蓋信義區)、`version: "646e7c8c-44f5-4ad5-83fd-4df03e7173f3"`、`capabilities: ["View","Query"]`。
+
+I3S 的價值已從「唯一出路」降為「**備援與交叉驗證訊號**」(§5.3、R2)。
 
 ## 4. AC3 — 限流 / 吞吐實測
 
@@ -320,31 +437,39 @@ curl -sS https://i3s.nlsc.gov.tw/building/i3s/SceneServer/layers/0   # 200, 2107
 - **單一 429 立即中止**整輪(`abortReason: "rate_limited"`,exit 3),不重試、不硬闖,並記錄 `Retry-After`;
 - 錯誤率超過 20%(且已達 5 次請求)即中止(`abortReason: "error_rate"`);
 - `--max-requests` 預設 120,**涵蓋 tileset 探索與 tile 抓取兩階段**;
+- 只沿路線 bounding volume 下降,**不遍歷整棵樹**(此性質亦已由 self-test 釘住);
 - 不送 cookie/authorization(匿名存取正是受測的存取模式)。
 
 ### 4.2 實測結果(信義區駕駛路線)
 
-`tileset.json` 損毀使建物/道路圖層**無法量測**(連 tile URL 都取不到)。因此吞吐量測對象為**同一主機上唯一可解碼的 3D Tiles 服務** `Terrain20M`(電子地圖),路線為 script 預設的信義區行車取樣點(101 → 市府 → 松壽路),自 root 依 bounding volume 逐層下降至 depth 12 後,依路線順序循環抓取 tile。
+**round-2 更正**:初版因代碼 0 損毀而改測地形圖層,並記為「建物圖層無法量測」。**代碼 22 可用後,建物圖層即可量測**,以下為對**建物圖層本身**的量測。
 
-| 執行 | rps | 請求數 | 狀態碼 | p50 | p95 | max | 429 |
-|---|---|---|---|---|---|---|---|
-| A | 1 | 60 | 60× 200 | 51 ms | 86 ms | 424 ms | 0 |
-| B | 2 | 80 | 80× 200 | 42 ms | 82 ms | 403 ms | 0 |
+```sh
+node --use-system-ca docs/spikes/nlsc-probe.mjs --mode=drive \
+  --root=https://3dtiles.nlsc.gov.tw/building/tiles3d/22/tileset.json \
+  --depth=4 --max-requests=40 --rps=2
+```
 
-兩輪皆 `aborted: false`、`findings: []`;探索到 17 個 tileset 節點與 17 個 tile。B 輪耗時 40.3 秒。
+| 執行 | 對象 | rps | 請求數 | 狀態碼 | p50 | p95 | max | 429 |
+|---|---|---|---|---|---|---|---|---|
+| **C** | **建物代碼 22** | 2 | **40** | 40× 200 | **147 ms** | **290 ms** | 347 ms | **0** |
+| A | Terrain20M(初版) | 1 | 60 | 60× 200 | 51 ms | 86 ms | 424 ms | 0 |
+| B | Terrain20M(初版) | 2 | 80 | 80× 200 | 42 ms | 82 ms | 403 ms | 0 |
+
+C 輪:`aborted: false`、`findings: []`、耗時 19.9 秒;探索到 **51 個沿路線的 tile**(整棵樹在單一 `tileset.json` 內,故 `tilesetsVisited: 1`)。
 
 **判讀**:
 
-- 傳遞基礎設施本身健康且低延遲(p95 < 90 ms),**未觀察到任何限流跡象**。
-- 但這只證明 **≤2 req/s、≤80 requests** 這個量級不觸發限流。**本測試刻意不探測限流門檻**——探測門檻等同對公開服務施壓,且條款第九點已明示機關可隨時無預警調整。因此「限流門檻為何」標記為**不測定**,這是選擇,不是缺口。
-- 量測對象是地形圖層而非建物圖層。**建物圖層的吞吐特性未經量測**,不得外推。
+- 建物圖層的 p95 為 **290 ms**,高於地形圖層(82–86 ms),合理——建物 tile 的實際位元組量大得多(本輪取樣的葉節點壓縮後 79 KB–780 KB)。**傳遞基礎設施健康,未觀察到任何限流跡象。**
+- 這只證明 **≤2 req/s、≤40 requests** 這個量級不觸發限流。**本測試刻意不探測限流門檻**——探測門檻等同對公開服務施壓,且條款第九點已明示機關可隨時無預警調整。「限流門檻為何」標記為**不測定**,這是選擇,不是缺口。
+- **真實 Cesium client 的請求速率會遠高於 2 req/s**;本量測給的是「單一使用者、克制存取」下的延遲基線,不是併發承載力的證據。FTP-39 應在瀏覽器實測中重新觀察。
 
 ### 4.3 可重跑性
 
-同一指令重跑產生同型 JSON(`schemaVersion: 1`,欄位固定),A/B 兩輪即為同型數據的實例。script 自我測試(12 項,local fake server,不打真實服務):
+同一指令重跑產生同型 JSON(`schemaVersion: 1`,欄位固定);A/B/C 三輪即為同型數據的實例。script 自我測試(local fake server,不打真實服務):
 
 ```sh
-node --test docs/spikes/nlsc-probe.selftest.mjs   # tests 12 / pass 12 / fail 0
+node --test docs/spikes/nlsc-probe.selftest.mjs   # tests 18 / pass 18 / fail 0
 ```
 
 ## 5. AC4 — tileset 改版偵測(RFC D5)
@@ -353,80 +478,152 @@ node --test docs/spikes/nlsc-probe.selftest.mjs   # tests 12 / pass 12 / fail 0
 
 | 訊號 | `3dtiles` tileset.json | 說明 |
 |---|---|---|
-| `ETag` | **無** | 兩個端點、多次取樣皆未出現 |
+| `ETag` | **無** | 可用與損毀端點、多次取樣皆未出現 |
 | `Last-Modified` | **無** | 同上 |
 | `Cache-Control` | `no-cache,no-store` | 明示不得快取,亦無版本語意 |
 | `Expires` | `-1,0`(格式異常) | 無法作為訊號 |
-| `asset.version`(tileset 內) | 無法讀取 | 因 §3 缺陷;Terrain20M 為 `"1.0"`,是 3D Tiles 規格版本,非資料版本 |
-| I3S `version`(`i3s` 主機) | `646e7c8c-44f5-4ad5-83fd-4df03e7173f3` | **GUID,唯一可用的服務端版本識別** |
+| `asset.version`(tileset 內) | 代碼 22 為 `1.0` | 這是 **3D Tiles 規格版本**,非資料版本(`road/0` 為 `1.1`) |
+| **tileset 頂層 `id`/`title`/`name`** | 代碼 22 為 **`112_A`** | round-2 新發現;**唯一內建於 3D Tiles payload 的成果識別字串**(§6.2) |
+| I3S `version`(`i3s` 主機) | `646e7c8c-44f5-4ad5-83fd-4df03e7173f3` | GUID,由**不同主機**供應的獨立版本識別 |
 
-**HTTP 層沒有任何可用的版本指紋。**
+**HTTP 層沒有任何可用的版本指紋**;版本訊號只能取自 payload 內容。
 
 ### 5.2 官方更新頻率(決定輪詢節奏)
 
 > 1.使用臺灣通用電子地圖建物框產製三維建物模型區域,**更新頻率為2年**⋯⋯
 > 2.使用104年以後更新之1/1,000地形圖建物框產製三維建物模型區域,則俟有更新1/1,000地形圖時,再予更新(**更新頻率未定**)。(`tabidx=3`)
 
-→ 變更**罕見但無排程**。這排除了「按時程重編」的做法,指向**低頻輪詢 + 內容比對**。
+信義區取樣到的建物 `SOURCE_DES` 全為 `臺北市1/1000`(§6.2),即落在**第 2 類:更新頻率「未定」**。→ 變更**罕見且無排程**,排除「按時程重編」的做法,指向**低頻輪詢 + 內容比對**。
 
 ### 5.3 建議機制(D5)
 
 1. **指紋來源:解碼後的 `tileset.json` 全文 sha256**,而非 raw body。
-   **理由(本次實測直接證得)**:目前 raw body 是全 NUL 且**逐次穩定**,對 raw bytes 取雜湊會得到「穩定」的假象——指紋會忠實地追蹤損毀內容。
-   `nlsc-probe.mjs` 已據此區分 `rawSha256` 與 `decodedSha256`,且在無任何可解碼樣本時輸出
-   `bodyStableAcrossSamples: null`(不是 `true`)。
-2. **輔助訊號:I3S 圖層文件的 `version` GUID**(`i3s.nlsc.gov.tw/building/i3s/SceneServer/layers/0`)。
-   由**不同主機**供應,可在 3D Tiles 端損毀時仍偵測到資料改版;兩者不一致本身即為值得告警的訊號。
-3. **輪詢節奏**:每日一次(對照 2 年更新頻率已極寬鬆),失敗採指數退避,**不得重試風暴**。
+   **理由(實測直接證得)**:損毀端點的 raw body 是全 NUL 且逐次穩定,對 raw bytes 取雜湊會得到「穩定」的假象——指紋會忠實地追蹤損毀內容。
+   `nlsc-probe.mjs` 已據此區分 `rawSha256` 與 `decodedSha256`,且在無任何可解碼樣本時輸出 `bodyStableAcrossSamples: null`(不是 `true`)。
+2. **輔助訊號**:tileset 頂層 `id`(代碼 22 = `112_A`)與 I3S 圖層的 `version` GUID。前者是成果批次識別,後者由**不同主機**供應;三者任一變動而其他未動,本身即值得告警。
+3. **輪詢節奏**:每日一次(對照「更新頻率未定/2年」已極寬鬆),失敗採指數退避,**不得重試風暴**。
 4. **告警條件**:
    - `decodedSha256` 變動 → 「tileset 改版」,觸發重新驗證流程(FTP-39/FTP-51);
-   - 無法解碼(即今日狀態)→ 「服務缺陷」告警,**與改版分開**,否則缺陷會被誤報成改版;
-   - I3S `version` 變動但 3D Tiles 指紋未動(或反之)→ 「來源不一致」告警。
-5. **誤報風險**:tileset.json 若含 session/時間戳等易變欄位,會造成每次比對都不同。**本次無法驗證**(內容取不到);FTP-39 實作時必須先取得一份可解碼樣本,確認欄位穩定後再定案雜湊範圍(必要時排除易變欄位)。
+   - 無法解碼 → 「服務缺陷」告警,**與改版分開**,否則缺陷會被誤報成改版;
+   - `id` 或 I3S `version` 變動但雜湊未動(或反之)→ 「來源不一致」告警。
+5. **誤報風險 — round-2 已實測**:初版因取不到內容而標記「無法驗證」。本輪對代碼 22 連續取樣 3 次,**`rawSha256` 與 `decodedSha256` 三次完全相同**(`bodyStableAcrossSamples: true`),即 tileset 內容**不含 session id、時間戳等易變欄位**,可直接對全文取雜湊,無須排除欄位。
+   注意:`set-cookie` 每次不同,但那在 header,不進入雜湊範圍。
 
 ## 6. 結論(三擇一)
 
-> ### **不可行 — 且 Plan B(caching proxy)無法補救。**
+> ### **直串可行(direct streaming)。不需要 caching proxy,不需要動態後端。**
 
-推理:
+### 6.1 推理
 
-1. **直串不可行**:`https://3dtiles.nlsc.gov.tw/building/tiles3d/0/tileset.json` 回 HTTP 200 但 body 不是其宣告的 gzip 資料流(100% NUL)。3D Tiles client 的第一個請求就是 tileset.json;取不到 root tileset,CesiumJS 連場景都無從開始。道路圖層同樣損毀。
-2. **Plan B 無法補救**:caching proxy 的上游就是同一個端點,取到的是同一份壞位元組。proxy 只能快取它拿得到的東西;此處拿不到。
-3. **「自行取得副本自託管」對臺北市不成立**:NLSC 明文「臺北市不供應;請逕洽臺北市政府資訊局」,線上與離線申請兩個管道皆排除臺北市。
-4. **但問題不在資料**:同一份臺北市建物資料經 I3S 主機供應時**完整可解碼**,extent 涵蓋信義區。這是**傳遞環節的伺服器缺陷**,不是資料不存在,也不是政策封鎖。
-5. **授權面另有未決事項**:線上服務之**商用許可**與**快取/再散布**在條款中皆無規範(§1.2、§1.3),即使缺陷修好,這兩點仍需肯定性答覆才能支撐公開產品。
+1. **官方端點今日可直串**:`https://3dtiles.nlsc.gov.tw/building/tiles3d/22/tileset.json` 回 200,gunzip 得 16,068,240 bytes 合法 3D Tiles JSON(85,209 節點),root sphere 涵蓋全部信義路線點;沿樹下降取得的真實葉節點 `.b3dm` 結構自洽、內嵌 glTF 正確,且全程 `access-control-allow-origin: *`(§3.1)。
+2. **RFC 的「永久串官方 + 無動態後端」前提成立**,Plan B(caching proxy)**不需啟用**。
+3. **代碼 0 的損毀是逐一服務代碼的個別問題**,不是服務層級的失能(§3.4)。它對本專案的影響僅止於「臺北市建物要用代碼 22 這個端點」。
+4. **授權面另有未決事項**:線上服務之**商用許可**與**快取/再散布**在條款中皆無規範(§1.2、§1.3),需 R4 的肯定性答覆才能支撐公開產品。**這與服務可行性是兩件事,不影響本結論。**
+5. **另有一項獨立於本專案的資安事項**:損毀端點正在對匿名呼叫者洩漏伺服器行程記憶體(§3.5),應以資安通報處理(R1)。
 
-依 ticket 規定,結論為「不可行」→ 已發 `[escalate]` + `needs-human`。**架構前提(永久串官方 + 無動態後端)在此缺陷修復前不成立**,FTP-39 / FTP-51 不應在此前提上動工。
+### 6.2 代碼 22 堪用嗎?——**堪用,對 M1 垂直切片沒有已知的品質損失**
+
+代碼 22 名為「1.0 版」,曾被合理懷疑是比代碼 0 更舊的成果。**本輪以自行取得的證據作出明確結論。**
+
+**證據 A — 現勢性:模型產製時間為 2023-10。**
+
+tileset 頂層 `id`/`title`/`name` 皆為 `112_A`;對信義區 5 顆葉節點、合計 **41 棟建物**的 batch table 取值,`M_MDATE` **全部為 `202310`**。兩個獨立訊號一致指向民國 112 年(2023)。
+`MDATE`(來源建物框日期)則隨區域不同:`201010`、`201108`、`201712`、`201912`。
+*(欄位語意無官方文件定義;依 `SOURCE`/`M_SOURCE` 的命名對應推定 `MDATE` 為來源資料日期、`M_MDATE` 為模型產製日期。此對應為推定,非官方確認。)*
+
+**證據 B — 與代碼 0 的差距在哪:`tabidx=3`「全國三維建物模型精進作業期程表」原文**
+
+> 年度 辦理區域 110 臺南市(原臺南市)、高雄市(原高雄縣) / 111 新北市、桃園市、新竹縣、臺南市(原臺南縣)、高雄市 / 112 彰化縣、南投縣、雲林縣、嘉義縣、宜蘭縣部分地區 / **113 辦理宜蘭縣部分地區、臺北市、新北市部分地區、苗栗縣、花蓮縣、台東縣、屏東縣** / 114 規劃辦理基隆市、新竹市、臺中市、嘉義市、高雄市部分地區、澎湖縣
+
+→ **臺北市的「分棟精進」排在 113 年度(2024),晚於代碼 22 的模型日期(2023-10)。** 因此「代碼 22 較舊」在**時序上成立**:它早於臺北市的分棟精進。
+
+**但這個差距打不到 M1 的目標區域**,理由是精進作業的**對象**:
+
+> (113年度)辦理三維建物模型精進,利用半自動化地籍資料分棟技術⋯⋯**臺灣通用電子地圖加值分棟建物模型產製**,包含宜蘭縣部分地區、**臺北市**、新北市部分地區⋯⋯
+
+分棟精進處理的是**臺灣通用電子地圖的「區塊建物框」**(多棟合併成一塊,需要用地籍資料切開)。而本輪取樣的 41 棟建物,`SOURCE_DES` **全部是 `臺北市1/1000`**——來自臺北市 1/1,000 地形圖建物框,**本來就是逐棟的**,不是待切分的區塊框。實測亦佐證:每棟有相異的 `BUILD_ID`、相異的 `BUILD_H`、獨立的幾何。
+
+**證據 C — 幾何與外觀實測:信義計畫區 5 顆葉節點,合計 41 棟建物。**
+
+| 取樣點 | 葉節點深度 / `geometricError` | gzip → b3dm | 建物數 | 最近建物質心距 | 最高建物 | 三角形/棟 |
+|---|---|---|---|---|---|---|
+| 臺北101 | 11 / 0.837 | 347,965 → 659,912 | 9 | 13.8 m | **512.43 m** | 429.7 |
+| 路線1(101/信義路) | 11 / 0.837 | 79,700 → 104,784 | 3 | 14.5 m | 129.06 m | 21.3 |
+| 路線2 | 9 / 3.349 | 780,536 → 965,736 | 14 | 33.0 m | 50.03 m | 37.1 |
+| 路線3(市府) | 10 / 1.674 | 471,164 → 656,632 | 8 | 42.1 m | 76.41 m | 163.8 |
+| 路線4(松壽路) | 10 / 1.674 | 444,094 → 587,804 | 7 | 13.3 m | 41.35 m | 50.7 |
+
+(質心距為 batch table 的 `CENT_E_97`/`CENT_N_97` TWD97 座標與取樣點的平面距離。)
+
+- **覆蓋**:五個取樣點**全部有真實幾何**,不只是落在 bounding sphere 內;每個取樣點 100 m 內的建物全部落在同一顆葉節點中。
+- **臺北101 確實存在**:該葉節點含高度 **512.43 m** 的量體(101 建築高度 508 m,量測值與之相符),周邊並有 395–467 m 的其他量體。
+- **逐棟分離(分棟)**:每顆 tile 的 `BATCH_LENGTH` 為 3–14,`BUILD_ID` 逐棟相異,`BUILD_H` 逐棟相異 → **不是合併塊體**。
+- **有貼圖**:glTF 2.0,屬性含 `POSITION`/`NORMAL`/`TEXCOORD_0`/`_BATCHID`;每個 primitive 各有自己的 material + texture + image(臺北101 那顆 tile 有 43 組),`alphaMode: MASK`。→ **有立面貼圖,不是純色量體。**
+- **幾何量級**:每棟 21–430 個三角形(一般街廓 20–50,高層量體較高)。屬 **LOD1 等級的柱體化量體**;NLSC 官方文件亦明載全國成果為「符合 OGC CityGML⋯⋯LOD1 三維建物模型」(`tabidx=3`),道路圖層的 tileset `id` 同樣自稱 `LOD1_AREA_RD_A_原始成果版`。
+  *(batch table 另有 `MODEL_LOD` 欄位,取樣值全為 `"0"`;該欄位的代碼對照表未見於任何 CMS 內容,**其語意 `unverified`**,不用以支撐 LOD 判定。)*
+
+**對照 ticket 母目標的判定**:
+
+- **視覺背景**:逐棟、帶立面貼圖、信義計畫區完整覆蓋、地標(101)高度正確 → **足夠**。
+- **RFC D5 的 physics proxy 來源**:逐棟分離 + `BUILD_H` + TWD97 質心 + 每棟僅數十個三角形 → **是相當理想的碰撞代理來源**(低面數、逐棟可索引)。
+- **已知代價**:**沒有可量化的代價**。臺北市 113 年度分棟精進的對象是區塊建物框區域,與本輪取樣到的 1/1,000 地形圖來源區不重疊。
+
+**誠實界限(不以推論充數)**:
+
+- 取樣為**信義計畫區 5 顆葉節點、41 棟建物**,不是全市普查。臺北市境內以**區塊建物框**為來源的區域(若有)可能缺少 113 年度的分棟成果,**本輪未量測**。M1 只涵蓋信義區,故不阻擋;若日後擴及全市,須重新評估。
+- **代碼 0 的內容完全無法取得**(tileset 損毀),因此「代碼 22 相對代碼 0 少了什麼」**無法直接比對**,只能由官方年度作業說明推得。上述判定建立在文件而非兩份資料的直接 diff 上。
+- 每顆 tile 有數十張獨立貼圖(臺北101 那顆 43 張),FTP-39 需留意貼圖數量與 draw call 對效能的影響。
+
+### 6.3 殘餘風險(不阻擋,但要進風險清單)
+
+1. **代碼 22 未文件化**:`tabidx=10` 的服務代碼表只列到 21,代碼 22 只出現在服務清單 JSON。搭配條款第二點(得隨時修改、暫停或終止服務且不負責任),**該端點被無預警下架的風險高於文件化端點**。緩解:D5 指紋監控同時監看端點可用性(§5.3),並把來源 URL 集中於單一設定檔以便切換(FTP-39)。
+2. **代碼 0 何時修好、修好後是否較優**未知。若日後修復,應重新比對兩者再決定採用哪一個。
+3. **商用與快取/再散布仍為 `unverified`**(§1.2、§1.3),待 R4。
+4. **瀏覽器端渲染尚未實證**(§2.4),待 FTP-39。
 
 ## 7. 建議(可執行,對應後續 ticket)
 
 | # | 建議 | 對應 |
 |---|---|---|
-| R1 | **向 NLSC 回報缺陷**(客服信箱 `23207@mail.nlsc.gov.tw`,「線上瀏覽及服務介接相關問題」之官方窗口)。附本報告 §3 的重現方式與 `nlsc-probe.mjs`。此為**唯一能解除阻擋的動作**,且只有 human 能發函。 | 新票(human-only) |
-| R2 | **評估 I3S 路線**:CesiumJS 具 `I3SDataProvider`。本 spike **僅驗證 I3S 圖層文件可解碼**,未驗證 node pages/geometry 抓取、效能、與 D5 指紋整合。需獨立 spike,不得直接當成既定路線。 | 新 spike 票 |
-| R3 | **查證臺北市政府資訊局的 3D 建物來源**(NLSC 官方指向的窗口),作為完全獨立於 NLSC 的來源選項。 | 新 spike 票 |
-| R4 | **函詢 NLSC 確認線上服務之商用許可與快取/再散布界線**(§1.2、§1.3 為 `unverified`)。 | 新票(human-only) |
-| R5 | **FTP-39 暫緩**:AC「本地 dev server 於信義 bbox 顯示 NLSC 建物」在缺陷修復前不可能達成。該票的「NLSC URL 設定集中於單一設定檔」仍應保留,並擴充為可切換 3D Tiles / I3S / 替代來源。 | FTP-39 |
-| R6 | **`LICENSING.md` 的 NLSC 條目暫不能定稿**(見 §8)。 | FTP-6 後續 |
+| **R1** | **向 NLSC 送出資安通報(非一般缺陷回報)**:`building/tiles3d/0` 與 `road2nd/tiles3d/0` 的回應正把伺服器行程記憶體回給匿名呼叫者,內容逐次變動,**可能包含其他使用者的資料**(§3.5)。窗口為「線上瀏覽及服務介接相關問題」的 `23207@mail.nlsc.gov.tw`(`tabidx=7` 原文)。通報請**私下**附技術細節與重現方式,**不要公開張貼殘留內容**。應同時說明缺陷邊界為 per-service-code(§3.4),避免對方往「gzip 壞掉」的方向排查。**此為 human 動作,agent 不執行。** | 新票(human-only) |
+| R2 | **I3S 路線降級為備援**:代碼 22 可用後,I3S 不再是唯一出路。保留其作為 D5 交叉驗證訊號(§5.3)與代碼 22 下架時的備援;是否投入獨立 spike 由 owner 依風險決定,**不再是阻擋性事項**。 | 待定 |
+| R3 | **臺北市政府資訊局的 3D 建物來源**查證,作為完全獨立於 NLSC 的來源選項。**優先度可降低**(直串已可行);若啟動,須連同 §1.6 的回饋/銷毀義務一併評估。 | 待定 |
+| **R4** | **函詢 NLSC 確認線上服務之商用許可與快取/再散布界線**(§1.2、§1.3 為 `unverified`)。**這是目前唯一仍會影響公開發布的未決事項。** | 新票(human-only) |
+| R5 | **FTP-39 可以動工**(初版建議暫緩,**已撤回**)。要求:(a) NLSC URL 集中於單一設定檔,且可切換 3D Tiles 代碼 / I3S / 替代來源;(b) 第一項驗收併入 §2.4 的瀏覽器 CORS 與渲染確認;(c) 使用建物**代碼 22**,並記錄 §6.3 的下架風險。 | FTP-39 |
+| R6 | **`LICENSING.md` 的 NLSC 條目仍不能定稿**(見 §8),待 R4 答覆。 | FTP-6 後續 |
 | R7 | **不要探測限流門檻**。條款第九點允許機關隨時無預警限流;門檻資訊對架構的價值低於施壓公開服務的代價。 | 本報告立場 |
 
 ## 8. 對 `LICENSING.md`(FTP-6)的影響
 
-FTP-6 已將 NLSC 條目標為「待 FTP-5 定稿」。**本 spike 的結論是:仍不能定稿**,但可以把待決事項寫得更精確(本票不修改 `LICENSING.md`,屬 FTP-6 / 後續票的 Scope):
+FTP-6 已將 NLSC 條目標為「待 FTP-5 定稿」。**本 spike 的結論是:仍不能定稿**(理由是授權面的 `unverified`,**不是**服務可行性),但可以把待決事項寫得更精確(本票不修改 `LICENSING.md`,屬 FTP-6 / 後續票的 Scope):
 
 - **不能**寫成「NLSC 3D 建物依 OGDL v1 釋出」。本次查證未找到涵蓋線上 3D 建物服務的 OGDL 標示;data.gov.tw 上找到的 OGDL 依據是**20m DTM**(dataset 138563),那是平臺採用的地形基礎,不是建物。
 - **可以**寫入的已證事實:(a) 線上服務由平臺「服務使用條款」治理,該條款**未規範商用與快取/再散布**;(b) 條款第六點課予「不得改變、移除或遮蔽既有版權/識別聲明」之義務;(c) NLSC 對三維圖資之授權採「顯名聲明」標示資料來源為內政部國土測繪中心(離線管道原文);(d) **臺北市建物模型係整合自臺北市既有成果,NLSC 不供應臺北市實體資料,並指向臺北市政府資訊局** — 這代表 props 圖層若採臺北市建物,授權來源機關可能是**臺北市政府而非 NLSC**,顯名聲明的對象要跟著改。
-- 待 R1/R4 有答覆後,才能決定 NLSC 條目寫成「可散布 + 顯名聲明」或「不得自託管散布」。
+- 待 R4 有答覆後,才能決定 NLSC 條目寫成「可散布 + 顯名聲明」或「不得自託管散布」。
 
 ## 9. 未查證 / 未執行事項彙總(不以推論充數)
 
 | 項目 | 狀態 | 原因 |
 |---|---|---|
-| 瀏覽器實際渲染 / DevTools CORS 確認 | **未執行** | 本 session 無 browser 工具;且缺陷未修復前無法完成(§2.4) |
+| 瀏覽器實際渲染 / DevTools CORS 確認 | **未執行** | 本 session 無 browser 工具(§2.4)。**已無技術前提待解**,建議併入 FTP-39 |
 | 線上服務商用許可 | `unverified` | 條款無規範(§1.2) |
 | 快取 / 再散布界線 | `unverified` | 條款無規範(§1.3) |
-| 建物圖層吞吐特性 | **無法量測** | tileset 損毀,取不到 tile URL(§4.2) |
+| 代碼 22 全市範圍的分棟/現勢性 | **部分驗證** | 僅取樣信義計畫區 5 顆葉節點 41 棟;全市未普查(§6.2) |
+| 代碼 22 與代碼 0 的**直接**內容比對 | **不可能** | 代碼 0 的 tileset 無法解碼,取不到其 tile(§6.2) |
+| `MODEL_LOD` 欄位的代碼對照 | `unverified` | 各 CMS 分頁皆無此欄位的說明(§6.2) |
+| 建物代碼 1 / 5 的當前狀態 | **初版量測,round-2 未重驗** | 依「不廣掃服務代碼」的克制原則(§3.2) |
 | 限流門檻 | **不測定** | 刻意不探測(§4.2、R7) |
-| tileset.json 欄位穩定性(D5 誤報風險) | **未驗證** | 內容取不到(§5.3) |
-| I3S 完整路線可行性 | **未驗證** | 僅驗證圖層文件可解碼(§3.5、R2) |
-| 缺陷是否為間歇性 | **部分** | 當日對 4 個受損端點共 20 次以上請求、3 種 HTTP 實作、2 個網路路徑均失敗;未做跨日觀測 |
+| 真實 Cesium 併發存取下的吞吐 | **未量測** | 探針上限 2 req/s;併發承載力不得由此外推(§4.2) |
+| 缺陷是否為間歇性 | **部分** | 當日對受損端點多次請求、3 種 HTTP 實作、2 個網路路徑均失敗;未做跨日觀測 |
+
+## 10. round-2 更正紀錄
+
+**初版(2026-08-10 14:03Z 交付)的 AC5 結論為「不可行 + Plan B 無法補救 + 架構前提被推翻」,並據此發出 `[escalate]`。該結論錯誤。**
+
+- **錯在哪**:初版量到的每一項事實都成立——代碼 0 確實 100% NUL、`road2nd/0` 確實逐次變動、本機與本網路確實已被排除、條款確實沒有商用與快取條文。**錯的是唯一一步推廣**:從「代碼 0 壞掉」推得「服務不可行」,而**沒有測服務清單上其他的臺北市建物代碼**。可用的代碼 22 就列在初版 §0 自己引用的那份清單裡。
+- **§3.4 的缺陷邊界描述亦為錯誤**:初版寫「缺陷精確落在被 gzip 壓縮的 `tileset.json`」,實際上 `building/22`(3,176,361 B gzip)與 `road/0`(418,890 B gzip)都能正常解壓。**缺陷是 per-service-code,不是 per-compression。** 這個錯誤會誤導 R1 的通報內容,已於 §3.4 重新推導。
+- **「架構前提被推翻」的敘述全數撤回**:RFC 的「永久串官方 + 無動態後端」前提**成立**。ticket 層級的 `[escalate]` 已由 operator 撤回。
+- **R1 的性質改變**:從「回報缺陷」升級為「資安通報」(§3.5、§7)。
+- **新增的實質結論**:代碼 22 的現勢性與 LOD 已由本輪自行取證並作出明確判定(§6.2),不再是懸而未決的問題。
+
+**方法論教訓(值得寫進後續 spike 的檢查表)**:當一個 spike 的結論是「不可行」時,**必須先窮盡自己已經引用過的清單**。初版引用了服務清單、也數過筆數,卻沒有逐筆檢查同一城市是否有第二個端點——**引用一份清單卻不讀完它,是本次唯一的實質缺陷。**
