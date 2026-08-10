@@ -19,21 +19,127 @@ jobs:
   profile:
     runs-on: ubuntu-latest
     outputs:
-      docs_only: ${{ steps.decide.outputs.docs_only }}
+      run_gates: ${{ steps.decide.outputs.run_gates }}
+      run_docs: ${{ steps.decide.outputs.run_docs }}
+      run_python: ${{ steps.decide.outputs.run_python }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
       - id: decide
-        # The decision lives in .github/profile.sh (shipped beside this
-        # workflow) so the routing logic is unit-testable outside Actions.
         run: |
-          docs_only="$(git diff --name-only "origin/${{ github.base_ref }}"...HEAD | sh .github/profile.sh)"
-          echo "docs_only=$docs_only" >> "$GITHUB_OUTPUT"
+          set -eu
+
+          # --- routing ------------------------------------------------------
+          # route(): reads the changed-file list on stdin and prints the job
+          # set for that diff as "gates=<bool> docs=<bool> python=<bool>".
+          # The self-test below and the real decision go through this ONE
+          # function — the table cannot pass while the decision differs.
+          # docs-only detection stays in .github/profile.sh (unchanged).
+          route() {
+            changed="$(cat)"
+            docs_only="$(printf '%s\n' "$changed" | sh .github/profile.sh)"
+
+            # IMPLEMENTATION PENDING (FTP-53 declaration commit): this is
+            # today's develop behaviour verbatim — gates on NOT docs-only,
+            # docs on docs-only, and no Python routing whatsoever. The exam
+            # below is frozen against the TARGET behaviour, so the cases
+            # covering the two known holes are red until the next commit.
+            if [ "$docs_only" = true ]; then gates=false; else gates=true; fi
+            docs="$docs_only"
+            py=false
+
+            echo "gates=$gates docs=$docs python=$py"
+          }
+
+          # --- exam: routing self-test --------------------------------------
+          # Table-driven cases over route(). A red case fails this step, which
+          # fails the profile job, which skips every downstream job — an
+          # unroutable PR is a blocked PR. Also the standing regression guard
+          # for the pre-existing docs-only routing (FTP-53 AC).
+          exam_fail=0
+          # expect <name> <changed files, space-separated> <expected job set>.
+          # Space-separated only because no case needs a path with a space;
+          # the real decision below feeds git's output to route() untouched.
+          expect() {
+            got="$(printf '%s' "$2" | tr ' ' '\n' | route)"
+            if [ "$got" = "$3" ]; then
+              echo "  ok   $1"
+            else
+              echo "  FAIL $1: want [$3] got [$got]"
+              exam_fail=1
+            fi
+          }
+
+          echo "routing self-test:"
+
+          # happy — the three profiles this repo actually ships
+          expect "python-only PR runs the Python job" \
+            "scene-pipeline/src/scene_pipeline/etl/dtm/__init__.py" \
+            "gates=true docs=false python=true"
+          expect "web-client-only PR runs npm gates, no Python" \
+            "web-client/src/index.ts" \
+            "gates=true docs=false python=false"
+          expect "docs-only PR skips npm gates, runs docs" \
+            "docs/TEST.md" \
+            "gates=false docs=true python=false"
+
+          # the FTP-22 hole — markdown must be linted even when not docs-only
+          expect "mixed .md + non-.md PR still runs docs" \
+            "contracts/README.md contracts/spec/grid.schema.json" \
+            "gates=true docs=true python=false"
+
+          # boundary
+          expect "empty diff routes to no reduced profile" \
+            "" \
+            "gates=true docs=false python=false"
+          # A .md-only change under scene-pipeline/ is still a docs-only PR:
+          # AC says a docs-only PR must not run the Python checks, and that
+          # outranks "the path is scene-pipeline/".
+          expect "scene-pipeline .md-only PR stays docs-only, no Python" \
+            "scene-pipeline/README.md" \
+            "gates=false docs=true python=false"
+          expect "scene-pipeline docs+code PR runs docs and Python" \
+            "scene-pipeline/README.md scene-pipeline/src/x.py" \
+            "gates=true docs=true python=true"
+          expect "root-level .md alone is still docs-only" \
+            "README.md" \
+            "gates=false docs=true python=false"
+          expect "docs-only without any .md still runs docs (no regression)" \
+            "docs/img/diagram.png" \
+            "gates=false docs=true python=false"
+          expect ".mdx is not markdown" \
+            "web-client/src/a.mdx" \
+            "gates=true docs=false python=false"
+          expect "scene-pipeline-* lookalike dir is not the pipeline" \
+            "scene-pipeline-legacy/x.py" \
+            "gates=true docs=false python=false"
+          expect "nested scene-pipeline path is not the pipeline" \
+            "docs/scene-pipeline/notes.md" \
+            "gates=false docs=true python=false"
+          expect "workflow-only PR (this ticket) runs npm gates only" \
+            ".github/workflows/ci.yml" \
+            "gates=true docs=false python=false"
+
+          if [ "$exam_fail" -ne 0 ]; then
+            echo "routing self-test FAILED — refusing to route this PR"
+            exit 1
+          fi
+          echo "routing self-test: all cases pass"
+          # --- end exam -----------------------------------------------------
+
+          decision="$(git diff --name-only "origin/${{ github.base_ref }}"...HEAD | route)"
+          echo "changed files:"
+          git diff --name-only "origin/${{ github.base_ref }}"...HEAD | sed 's/^/  /'
+          echo "routing decision: $decision"
+          # route() prints "<job>=<bool>" words; the outputs are "run_<job>".
+          for kv in $decision; do
+            printf 'run_%s\n' "$kv" >> "$GITHUB_OUTPUT"
+          done
 
   gates:
     needs: profile
-    if: needs.profile.outputs.docs_only != 'true'
+    if: needs.profile.outputs.run_gates == 'true'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -53,7 +159,7 @@ jobs:
 
   docs:
     needs: profile
-    if: needs.profile.outputs.docs_only == 'true'
+    if: needs.profile.outputs.run_docs == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
