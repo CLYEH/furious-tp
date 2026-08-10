@@ -43,7 +43,13 @@ RUNTIME_DEPS = [
 
 @pytest.mark.parametrize("module", SUBPACKAGES)
 def test_subpackage_importable(module: str) -> None:
-    importlib.import_module(module)
+    mod = importlib.import_module(module)
+    # A deleted __init__.py silently degrades the directory into an implicit
+    # namespace package and the bare import still succeeds (mutation testing
+    # caught exactly this), so require a regular package backed by its
+    # __init__.py file.
+    assert mod.__file__ is not None, f"{module} is a namespace package, expected __init__.py"
+    assert mod.__file__.endswith("__init__.py"), f"{module} is not backed by __init__.py"
 
 
 @pytest.mark.parametrize("module", RUNTIME_DEPS)
