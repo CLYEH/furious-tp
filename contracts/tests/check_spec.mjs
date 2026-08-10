@@ -84,6 +84,13 @@ function readText(rel) {
 function readJson(rel) {
   return JSON.parse(readText(rel));
 }
+// Digit-guarded citation check: "41.0 m" must NOT be satisfied by the "41.0 m"
+// hiding inside "241.0 m". Plain substring matching let an understated survey
+// witness survive the round-2 mutation loop (N14).
+function citesNumber(md, value, unit = " m") {
+  const s = String(value).replace(/\./g, "\\.");
+  return new RegExp(`(?<![0-9.])${s}(\\.0)?${unit}`).test(md);
+}
 
 // Grid formulas exactly as specified in spec/grid.md
 function tileOf(e, n, s) {
@@ -113,7 +120,12 @@ check("H1", "contracts/README.md: 定位 / 版本策略 / merge = finalized", ()
   const md = readText("README.md");
   assert(/^## 定位/m.test(md), "missing section 「## 定位」");
   assert(/^## 版本策略/m.test(md), "missing section 「## 版本策略」");
-  assert(/merge = finalized/.test(md), "missing clause 「merge = finalized」");
+  // both the section and the clause body — mutating either alone must fail
+  assert(/^## merge = finalized/m.test(md), "missing section 「## merge = finalized」");
+  assert(
+    (md.match(/merge = finalized/g) || []).length >= 2,
+    "the merge = finalized clause must appear as both heading and clause body",
+  );
 });
 
 check("H2", "contracts/spec/grid.md: four normative sections", () => {
@@ -327,8 +339,8 @@ check("B11", "Z budget covers the measured worst tile with the declared margin",
     "encodable span must cover the measured terrain relief",
   );
   // grid.md must print the measured witnesses, not a hand-wave
-  for (const lit of [`${z.worst_tile_span_m}`, `${z.terrain_worst_relief_m}`]) {
-    assert(md.includes(lit), `grid.md must cite the measured witness ${lit} m`);
+  for (const lit of [z.worst_tile_span_m, z.terrain_worst_relief_m]) {
+    assert(citesNumber(md, lit), `grid.md must cite the measured witness ${lit} m`);
   }
   assert(
     !/遠低於/.test(md),
@@ -343,6 +355,12 @@ check("B12", "h0 selection rule is executable and keeps q_z in range", () => {
   assert(
     md.includes("h0 = floor(h_min / z_step_m) × z_step_m"),
     "grid.md must state the h0 selection rule",
+  );
+  // the compliance condition must stay expressed in the contract's own
+  // parameters — a hard-coded bound silently decouples it from grid.json
+  assert(
+    md.includes("h_max - h0 <= z_quant_max × z_step_m"),
+    "grid.md must state the per-tile compliance condition in terms of the constants",
   );
   // execute the rule on the measured worst tile and on adversarial inputs
   const cases = [
@@ -550,6 +568,11 @@ check("E5", "spec/grid.md ECEF table matches constants/ecef_examples.json", () =
   for (const v of readJson("constants/ecef_examples.json").vectors) {
     for (const c of v.ecef) assert(md.includes(c.toFixed(4)), `ECEF table drift: ${c}`);
     for (const c of v.epsg3826) assert(md.includes(String(c)), `ECEF input drift: ${c}`);
+    // the comparison tolerance the doc advertises must be the one shipped
+    assert(
+      md.includes(`tolerance_m = ${v.tolerance_m}`),
+      `grid.md advertises a different tolerance than ${v.name} (${v.tolerance_m})`,
+    );
   }
 });
 
@@ -560,6 +583,8 @@ check("E6", "normative prose clauses are pinned (AC2 / AC3 / AC5)", () => {
   assert(/位元級,無容差/.test(md), "seam bit-exactness clause weakened");
   assert(!/容差 *[0-9]/.test(md.split("## 接縫規則")[1] ?? ""), "seam clause gained a tolerance");
   assert(/round half up/.test(md), "XY rounding convention altered");
+  // B6 executes round-half-up; the doc must not contradict it anywhere
+  assert(!/round half (down|even)/.test(md), "a contradictory rounding convention appears");
 });
 
 check("E7", "seam guarantee is stated in ECEF and applied per vertex (B-3)", () => {
@@ -572,20 +597,32 @@ check("E7", "seam guarantee is stated in ECEF and applied per vertex (B-3)", () 
   );
   const seam = md.split("## 接縫規則")[1] ?? "";
   assert(/ECEF/.test(seam), "seam section must state the guarantee in ECEF terms");
+  // ...and must name ECEF as the guaranteed SPACE, not merely mention it
+  assert(
+    seam.includes("**本節保證的空間是 ECEF**"),
+    "seam section must declare ECEF as the guaranteed space",
+  );
   assert(fs && Number.isFinite(fs.rigid_enu_seam_gap_m), "m1_area.json needs a frame_survey");
   assert(
     fs.rigid_enu_seam_gap_m > 0.5,
     "frame_survey must record the measured gap that motivates the clause",
   );
-  for (const lit of [`${fs.rigid_enu_seam_gap_m}`, `${fs.meridian_convergence_deg_max}`]) {
-    assert(md.includes(lit), `grid.md must cite the measured witness ${lit}`);
-  }
+  assert(
+    citesNumber(md, fs.rigid_enu_seam_gap_m),
+    `grid.md must cite the measured seam gap ${fs.rigid_enu_seam_gap_m} m`,
+  );
+  assert(
+    citesNumber(md, fs.meridian_convergence_deg_max, " 度"),
+    `grid.md must cite the measured convergence ${fs.meridian_convergence_deg_max} 度`,
+  );
 });
 
 check("E8", "anchor EPSG:3826 and WGS84 agree under an independent projection", () => {
   const m = readJson("constants/m1_area.json");
   const tol = m.anchor_tolerance_m;
-  assert(Number.isFinite(tol) && tol > 0 && tol <= 25, "anchor_tolerance_m in (0, 25]");
+  // anchors are measured, not eyeballed: the two representations of one point
+  // must agree tightly. Round 1's self-declared +/-100 m was the S-1 hole.
+  assert(Number.isFinite(tol) && tol > 0 && tol <= 5, "anchor_tolerance_m in (0, 5]");
   for (const a of m.anchors) {
     assert(
       Array.isArray(a.approx_wgs84) && a.approx_wgs84.length === 2,
@@ -624,6 +661,21 @@ check("E9", "corridor witness numbers match the anchor geometry", () => {
   );
   // round 1 claimed a section that contradicted the named intersection
   assert(!m.rationale.includes("四—五段"), "round-1 contradictory section label still present");
+});
+
+check("E10", "geoid_offset_m is declared a pending measurement, not an estimate", () => {
+  const md = readText("spec/grid.md");
+  const m = readJson("constants/m1_area.json");
+  assertEq(m.geoid_offset_m, X.geoidOffsetM, "geoid_offset_m");
+  assert(md.includes("**待辦實測項**"), "grid.md must mark the geoid offset as pending QA measurement");
+  assert(
+    !/[十百]?[0-9十]+ *公尺|約十餘公尺/.test(md.split("高程慣例")[1]?.split("\n")[0] ?? ""),
+    "the geoid offset must not carry an unverified magnitude estimate",
+  );
+  assert(
+    md.includes("不得將 `geoid_offset_m` 視為已知量"),
+    "grid.md must forbid treating the unmeasured offset as known",
+  );
 });
 
 // ---------------------------------------------------------------------------
