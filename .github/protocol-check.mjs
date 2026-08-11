@@ -35,3 +35,4 @@ if (errors.length) {
   process.exit(1);
 }
 console.log("protocol-check: OK");
+// ftp-62 verifier probe (temp)
