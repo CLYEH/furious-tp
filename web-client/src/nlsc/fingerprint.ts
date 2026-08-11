@@ -241,14 +241,14 @@ export function recordSample(
     }
     establishedHash = hash;
     establishedTilesetId = tilesetId;
-  } else if (hash === establishedHash && tilesetId !== establishedTilesetId) {
-    alerts.push({
-      kind: "signal-mismatch",
-      url: record.url,
-      detail: `tileset id 由 ${String(establishedTilesetId)} 變為 ${String(tilesetId)},但內容指紋未動`,
-    });
-    establishedTilesetId = tilesetId;
   }
+  // There is deliberately no "id moved but the content did not" branch. The id
+  // lives INSIDE the document the digest covers, and `readTilesetSample` derives
+  // both from the same `text`, so an id change always changes the hash. A branch
+  // for it could never run and a test for it could never fail. (FTP-5 round-4
+  // review flagged this in the spec; an earlier version of this file had the
+  // branch anyway, with a case that only passed because it hand-built a state
+  // the reader cannot produce. The unreachability is now pinned as a case.)
 
   return {
     record: { ...record, observations, recent, establishedHash, establishedTilesetId },
