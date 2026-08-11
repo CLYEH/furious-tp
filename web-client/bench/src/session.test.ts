@@ -63,6 +63,14 @@ const environment = {
   headless: true,
   screen: { width: 1920, height: 1080, presentCadenceHz: 60 },
   power: { charging: true, batteryLevel: 1, note: "navigator.getBattery()" },
+  externalGpuLoad: {
+    supported: true,
+    contended: false,
+    utilizationPctAtStart: 3,
+    utilizationPctAtEnd: 4,
+    foreignProcesses: [],
+    note: "clean",
+  },
   frameRateLimitDefeated: false,
   measurementNote: "scene.render() CPU cost",
 };
@@ -328,6 +336,46 @@ describe("runBench — interruption", () => {
     // A headed Chrome that outlives an interrupted bench holds a GPU and keeps
     // rendering; the next run then measures a machine that is already busy.
     expect(fake.closeCount()).toBe(1);
+  });
+});
+
+describe("runBench — external GPU load", () => {
+  it("brackets the run with a second utilisation reading", async () => {
+    // One reading taken before the run cannot show that something else started
+    // up half way through, and that is exactly the case that makes two runs of
+    // the same version disagree. The pair is the evidence.
+    const fake = fakeDriver();
+    const driver: BenchDriver = {
+      ...fake.driver,
+      readGpuUtilisationNow: () => Promise.resolve("47"),
+    };
+    const report = await runBench({ routes: [route("a")], cacheStates: ["cold"], driver });
+    expect(report.environment.externalGpuLoad.utilizationPctAtEnd).toBe(47);
+    // The start reading came from readEnvironment and must survive untouched.
+    expect(report.environment.externalGpuLoad.utilizationPctAtStart).toBe(3);
+  });
+
+  it("leaves the reading alone when the rig cannot supply one", async () => {
+    // A driver without the capability must not turn into a fabricated number.
+    const fake = fakeDriver();
+    const report = await runBench({
+      routes: [route("a")],
+      cacheStates: ["cold"],
+      driver: fake.driver,
+    });
+    expect(report.environment.externalGpuLoad.utilizationPctAtEnd).toBe(4);
+  });
+
+  it("survives a driver that throws while reading utilisation", async () => {
+    // Housekeeping must never destroy the run — the same rule that the EBUSY
+    // cleanup bug taught this harness the hard way.
+    const fake = fakeDriver();
+    const driver: BenchDriver = {
+      ...fake.driver,
+      readGpuUtilisationNow: () => Promise.reject(new Error("nvidia-smi exploded")),
+    };
+    const report = await runBench({ routes: [route("a")], cacheStates: ["cold"], driver });
+    expect(report.valid).toBe(true);
   });
 });
 

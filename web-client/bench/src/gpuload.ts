@@ -35,6 +35,16 @@ export interface ExternalGpuLoad {
   note: string;
 }
 
+/** What the environment carries when the query never ran. Not "clean" — "unknown". */
+export const UNMEASURED_GPU_LOAD: ExternalGpuLoad = {
+  supported: false,
+  contended: null,
+  utilizationPctAtStart: null,
+  utilizationPctAtEnd: null,
+  foreignProcesses: [],
+  note: "未查詢 GPU 佔用,本次是否有其他 GPU 負載未知 —— 不等於沒有負載。",
+};
+
 export interface GpuLoadSample {
   utilisationStart: string | null;
   utilisationEnd: string | null;

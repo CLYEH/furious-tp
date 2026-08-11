@@ -14,6 +14,7 @@
  * two states here is smaller than the words suggest.
  */
 
+import { execFileSync } from "node:child_process";
 import { rm } from "node:fs/promises";
 import { cpus, release, type as osType } from "node:os";
 import { join } from "node:path";
@@ -21,6 +22,7 @@ import { join } from "node:path";
 import { type BrowserContext, type Page, chromium } from "@playwright/test";
 
 import type { BenchPageEnvironment, BenchPagePower, BenchPose } from "../page/main.ts";
+import { UNMEASURED_GPU_LOAD, summariseGpuLoad } from "./gpuload.ts";
 import type { MemorySample } from "./memory.ts";
 import type { BenchEnvironment, RouteMeasurement } from "./report.ts";
 import { type RouteDefinition, createAutopilot } from "./route.ts";
@@ -95,6 +97,52 @@ const MEASUREMENT_NOTE =
   "主序列 frameTimesMs = 手動驅動 render loop 下 widget.render() 的主執行緒耗時(不含 GPU 非同步執行);" +
   "次序列 presentIntervalsMs = 相鄰呈現幀的間隔(受顯示更新率限制)。";
 
+
+/**
+ * Reads a command's stdout, or null if it is not there.
+ *
+ * `shell: false` and an absolute-ish command name on purpose: a shelled command
+ * on this machine resolves through WSL and fails for everything, which would
+ * make "no foreign GPU load" the answer to every query — a clean bill of health
+ * from a check that never ran.
+ */
+function tryRun(command: string, args: string[]): string | null {
+  try {
+    return execFileSync(command, args, {
+      encoding: "utf8",
+      shell: false,
+      timeout: 15_000,
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+  } catch {
+    return null;
+  }
+}
+
+const gpuUtilisationNow = (): string | null =>
+  tryRun("nvidia-smi", ["--query-gpu=utilization.gpu", "--format=csv,noheader,nounits"]);
+
+/**
+ * PIDs of the browsers this harness itself started, so they are not counted as
+ * foreign load. Found by profile directory, which is unique to this run.
+ */
+function ourBrowserPids(profileRoot: string): number[] {
+  // Single quotes are the only metacharacter that matters inside a PowerShell
+  // single-quoted string; a temp path cannot contain one, so doubling it is
+  // cheap insurance rather than a live concern.
+  const needle = profileRoot.replace(/'/g, "''");
+  const script =
+    "Get-CimInstance Win32_Process -Filter \"Name='chrome.exe'\" | " +
+    `Where-Object { $_.CommandLine -like '*${needle}*' } | ` +
+    "ForEach-Object { $_.ProcessId }";
+  const out = tryRun("powershell", ["-NoProfile", "-Command", script]);
+  if (out === null) return [];
+  return out
+    .split(String.fromCharCode(10))
+    .map((line) => Number(line.trim()))
+    .filter((pid) => Number.isInteger(pid) && pid > 0);
+}
+
 export function createPlaywrightDriver(options: PlaywrightDriverOptions): BenchDriver {
   const profileFor = (routeId: string): string => join(options.profileRoot, routeId);
 
@@ -147,6 +195,8 @@ export function createPlaywrightDriver(options: PlaywrightDriverOptions): BenchD
       frameRateLimitDefeated: page.frameRateLimitDefeated,
       measurementNote: MEASUREMENT_NOTE,
       presentIntervalMedianMs: page.presentIntervalMedianMs,
+      // Overridden by readEnvironment, which samples it while our browser is up.
+      externalGpuLoad: UNMEASURED_GPU_LOAD,
     };
   }
 
@@ -160,9 +210,24 @@ export function createPlaywrightDriver(options: PlaywrightDriverOptions): BenchD
 
   return {
     readEnvironment(): Promise<BenchEnvironment> {
-      return withPage(join(options.profileRoot, "__environment"), async (page) =>
-        nodeEnvironment(await readPageEnvironment(page)),
-      );
+      return withPage(join(options.profileRoot, "__environment"), async (page) => {
+        // Sampled while our own browser is up, so its PIDs can be excluded and
+        // whatever remains is genuinely somebody else.
+        const load = summariseGpuLoad({
+          utilisationStart: gpuUtilisationNow(),
+          utilisationEnd: null,
+          computeApps: tryRun("nvidia-smi", [
+            "--query-compute-apps=pid,process_name",
+            "--format=csv,noheader",
+          ]),
+          ourPids: ourBrowserPids(options.profileRoot),
+        });
+        return { ...nodeEnvironment(await readPageEnvironment(page)), externalGpuLoad: load };
+      });
+    },
+
+    readGpuUtilisationNow(): Promise<string | null> {
+      return Promise.resolve(gpuUtilisationNow());
     },
 
     async runRoute(request: RouteRequest): Promise<RouteMeasurement> {

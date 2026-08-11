@@ -49,6 +49,14 @@ const environment = () => ({
   headless: true,
   screen: { width: 1920, height: 1080, presentCadenceHz: 60 },
   power: { charging: true, batteryLevel: 1, note: "navigator.getBattery()" },
+  externalGpuLoad: {
+    supported: true,
+    contended: false,
+    utilizationPctAtStart: 3,
+    utilizationPctAtEnd: 4,
+    foreignProcesses: [],
+    note: "clean",
+  },
   frameRateLimitDefeated: false,
   measurementNote: "scene.render() CPU cost",
 });

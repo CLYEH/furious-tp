@@ -20,6 +20,7 @@ import type {
   RouteFailure,
   RouteMeasurement,
 } from "./report.ts";
+import { UNMEASURED_GPU_LOAD } from "./gpuload.ts";
 import { assembleReport, bounded } from "./report.ts";
 import { type RigExpectation, checkRigGpu } from "./rig.ts";
 import type { RouteDefinition } from "./route.ts";
@@ -46,6 +47,8 @@ export interface BenchDriver {
   readEnvironment(): Promise<BenchEnvironment>;
   runRoute(request: RouteRequest): Promise<RouteMeasurement>;
   close(): Promise<void>;
+  /** GPU utilisation right now, as nvidia-smi prints it. Optional: not every rig has it. */
+  readGpuUtilisationNow?(): Promise<string | null>;
   /** Optional so a test double can omit it; only called when memoryMinutes is set. */
   runMemoryCycle?(request: MemoryCycleRequest): Promise<MemoryCycleResult>;
 }
@@ -81,6 +84,7 @@ const UNKNOWN_ENVIRONMENT: BenchEnvironment = {
   headless: true,
   screen: { width: 0, height: 0, presentCadenceHz: 0 },
   power: { charging: null, batteryLevel: null, note: "環境讀取失敗,電源狀態未知" },
+  externalGpuLoad: UNMEASURED_GPU_LOAD,
   frameRateLimitDefeated: false,
   measurementNote: "",
 };
@@ -218,10 +222,26 @@ export async function runBench(options: RunBenchOptions): Promise<BenchReport> {
     }
   }
 
+  // Sampled after the last route, so the pair brackets the measurement. One
+  // reading taken before the run cannot show that something else started up
+  // half way through — which is precisely the case that makes two runs of the
+  // same version disagree.
+  const endUtilisation = await Promise.resolve(options.driver.readGpuUtilisationNow?.()).catch(
+    () => null,
+  );
+  const endPct = endUtilisation == null ? null : Number(endUtilisation.trim());
+  const environmentAtEnd: BenchEnvironment =
+    endPct === null || !Number.isFinite(endPct)
+      ? environment
+      : {
+          ...environment,
+          externalGpuLoad: { ...environment.externalGpuLoad, utilizationPctAtEnd: endPct },
+        };
+
   return assembleReport({
     expected,
     measurements,
-    environment,
+    environment: environmentAtEnd,
     memory,
     interrupted,
     startedAt,

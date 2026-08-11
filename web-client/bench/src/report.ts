@@ -15,6 +15,7 @@
  * deleting it would turn a recoverable 20-minute run into a lost one.
  */
 
+import type { ExternalGpuLoad } from "./gpuload.ts";
 import type { MemoryResult, PowerState } from "./memory.ts";
 import { type RigExpectation, checkRigGpu } from "./rig.ts";
 import type { RouteKind } from "./route.ts";
@@ -72,6 +73,12 @@ export interface BenchEnvironment {
   };
   /** The rig is a laptop, and mains vs battery is a different experiment. */
   power: PowerState;
+  /**
+   * Who else was on this GPU. D6 requires "無其他 GPU 負載", and the renderer
+   * string cannot answer it — it says which card, not who else is using it.
+   * Recorded, never enforced: see gpuload.ts.
+   */
+  externalGpuLoad: ExternalGpuLoad;
 }
 
 export interface RouteMeasurement {
