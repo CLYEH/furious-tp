@@ -297,7 +297,7 @@ def test_the_sentinel_cannot_be_mistaken_for_an_elevation_taiwan_can_produce():
     measurement can collide with it.
     """
     low, high = PLAUSIBLE_ELEVATION_RANGE_M
-    assert not low <= OUTPUT_NODATA <= high
+    assert not (low <= OUTPUT_NODATA <= high)
 
 
 def test_the_published_raster_declares_the_pinned_sentinel(aligned_source, run_etl):

@@ -304,6 +304,10 @@ def test_the_recorded_kernel_distinguishes_rasters_that_really_differ(tmp_path, 
     downstream consumer has to tell them apart. A hard-coded label would put the
     same provenance beside both, and the wrong one would look entirely normal.
     """
+    def recorded_kernel(result):
+        record = json.loads(result.provenance_path.read_text(encoding="utf-8"))
+        return record["output"]["resampling"]
+
     near = run_etl(phase_shifted_source, out=tmp_path / "near" / "dtm.tif", resampling="nearest")
     bilin = run_etl(phase_shifted_source, out=tmp_path / "bilin" / "dtm.tif", resampling="bilinear")
 
@@ -313,10 +317,8 @@ def test_the_recorded_kernel_distinguishes_rasters_that_really_differ(tmp_path, 
         "the two kernels produced identical rasters, so this case would pin nothing"
     )
 
-    assert json.loads(near.provenance_path.read_text(encoding="utf-8"))["output"]["resampling"] \
-        == "nearest"
-    assert json.loads(bilin.provenance_path.read_text(encoding="utf-8"))["output"]["resampling"] \
-        == "bilinear"
+    assert recorded_kernel(near) == "nearest"
+    assert recorded_kernel(bilin) == "bilinear"
 
 
 def test_a_local_source_needs_an_explicit_retrieval_date(aligned_source, tmp_path, attribution):
@@ -904,8 +906,9 @@ def test_an_unusable_output_destination_is_reported(tmp_path, aligned_source, ru
         run_etl(aligned_source, out=blocker / "dtm.tif")
 
 
-DTM_README = Path(__file__).resolve().parents[3] / "src" / "scene_pipeline" / "etl" / "dtm" \
-    / "README.md"
+DTM_README = (
+    Path(__file__).resolve().parents[3] / "src" / "scene_pipeline" / "etl" / "dtm" / "README.md"
+)
 
 
 def readme_limitation_paragraph() -> str:

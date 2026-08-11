@@ -63,6 +63,22 @@ def test_an_explicit_area_file_overrides_the_default(tmp_path, aligned_source, a
         assert (ds.width, ds.height) == (25, 25)
 
 
+def test_the_resampling_flag_reaches_the_run_and_the_record(tmp_path, aligned_source, attribution):
+    """The other half of "the record names the kernel that was used".
+
+    Pinning the record against the library argument leaves the CLI free to drop
+    `--resampling` on the floor: the operator asks for cubic, bilinear runs, and
+    the record truthfully reports the bilinear that actually happened. Nothing
+    is inconsistent, nothing fails, and the elevations are not the ones that
+    were asked for. So the flag is followed all the way through to the record.
+    """
+    out = tmp_path / "out" / "dtm.tif"
+    assert main(["--source", str(aligned_source), "--out", str(out),
+                 "--resampling", "cubic", *attribution_argv(attribution)]) == 0
+    record = json.loads((out.parent / "dtm.source.json").read_text(encoding="utf-8"))
+    assert record["output"]["resampling"] == "cubic"
+
+
 def test_attribution_flags_reach_the_record(tmp_path, aligned_source, attribution):
     out = tmp_path / "out" / "dtm.tif"
     main(["--source", str(aligned_source), "--out", str(out), *attribution_argv(attribution)])
