@@ -1,24 +1,40 @@
 /**
- * Retracted claims must stay retracted — everywhere, not where they were spotted.
+ * A REGRESSION TEST over known retracted wordings. NOT an invariant.
  *
- * WHY THIS FILE EXISTS. In round 1 the claim "the run-to-run spread came from
- * GPU contention" was withdrawn: it was removed from the PR body, from
- * gpuload.ts, and from the handoff. It then survived in README.md with a
- * different number ("utilisation swinging 7%-55%"), was shipped, and was found
- * by the verifier after merge.
+ * WHY IT EXISTS. In round 1 the claim "the run-to-run spread came from GPU
+ * contention" was withdrawn: removed from the PR body, from gpuload.ts and from
+ * the handoff. It then survived in README.md with a different number
+ * ("utilisation swinging 7%-55%"), shipped, and was found by the verifier after
+ * merge.
  *
  * The mechanism matters more than the instance. The finding named the PR body
  * and the code, so I patched the PR body and the code. The retraction covered
  * THE PLACES THAT WERE POINTED AT rather than the claim, and a claim removed
- * from three places out of four is not removed. A promise not to repeat it is
- * the same kind of object as the original claim — unverifiable. So each
- * retraction becomes a test.
+ * from three places of four is not removed. A promise not to repeat it is the
+ * same kind of unverifiable object as the claim itself, so each retraction
+ * became a test.
  *
- * Both directions are needed:
+ * Two directions:
  *   - forbidden: a withdrawn claim must appear nowhere in the deliverable
- *   - required: a disclosure that only lives in a PR body does not exist for
- *     anyone reading the shipped files, so the ones that were relied on are
- *     pinned present
+ *   - required: a disclosure that lives only in a PR body does not exist for
+ *     anyone reading the shipped files, so the ones relied on are pinned present
+ *
+ * WHAT IT DOES NOT COVER — because calling it an invariant would overstate it,
+ * and an overstated guard gets trusted for things it cannot do. Three classes
+ * are outside it BY CONSTRUCTION:
+ *
+ *   1. REPHRASING. It matches declared wordings. The original incident was
+ *      itself a rephrasing: "7%-55%" only joined the list after the verifier
+ *      found it, never before.
+ *   2. THREE OF THE FOUR SURFACES. The scan walks bench/ only. That same claim
+ *      also lived in the PR body, in gpuload.ts and in the handoff — and a
+ *      squash merge turns the PR body into a permanent commit message.
+ *   3. A NEW CLAIM OF THE SAME KIND. Four named retractions are forbidden; a
+ *      fifth qualifier on some other verdict is outside it by construction.
+ *
+ * The `required` half is the stronger one, because it compares whole statements
+ * against declared constants instead of hunting for words someone thought of.
+ * That is the half to extend when a new verdict needs protecting.
  */
 
 import { readFileSync, readdirSync } from "node:fs";
@@ -83,7 +99,12 @@ const ENGLISH_NEGATIONS = [/\bnot\b/i, /\bwithdrawn\b/i, /\bno longer\b/i, /\bne
  * survive as single tokens and stay matchable.
  */
 function clauses(text: string): string[] {
-  return text.split(/[。！？；,、\n;]+|\.(?=\s|$)/);
+  // The separators THIS document actually uses, established by counting rather
+  // than assumed: the full-width comma appears 0 times in it and the half-width
+  // one 203, and the em-dash — is its main clause separator at 59 occurrences.
+  // Colons, markdown table pipes and bold markers separate too. Guessing a
+  // document's punctuation is the same mistake as guessing its wording.
+  return text.split(/[。！？；,、:：|\n;]+|—+|\*\*|\.(?=\s|$)/);
 }
 
 export function assertsClaim(line: string, fragment: string): boolean {
@@ -137,6 +158,15 @@ const RETRACTIONS: Retraction[] = [
 
 describe("retracted claims do not reappear in the deliverable", () => {
   const files = deliverableFiles();
+
+  it("declares at least one fragment per retraction", () => {
+    // `fragments: []` would leave a retraction listed, described, and checking
+    // nothing at all — an entry that reads as protection while providing none.
+    for (const retraction of RETRACTIONS) {
+      expect(retraction.fragments.length).toBeGreaterThan(0);
+      expect(retraction.fragments.every((f) => f.trim() !== "")).toBe(true);
+    }
+  });
 
   it("scans a non-trivial number of files", () => {
     // Guard against the scan silently covering nothing, which would make every
@@ -261,20 +291,32 @@ describe("required disclosures are in the deliverable, not only in the PR", () =
     }
   });
 
-  it("states AC1b as NOT MET, in one place, with no qualifier attached", () => {
-    const verdicts = statementsAbout(readme, /AC1b/);
-    expect(verdicts.length).toBeGreaterThan(0);
+  /**
+   * Equality against a declared constant, NOT a blacklist of qualifier words.
+   *
+   * The previous version forbade /條件下|競用|污染|contend/ -- four strings
+   * somebody thought of -- and review immediately produced five that survived:
+   * 初步未達, 暫時未達, 本批未達, 在目前環境下未達, 於外部負載影響下未達.
+   * 本批未達 IS, semantically, the qualifier that was retracted.
+   *
+   * That is the same limitation as the grep which originally missed this claim,
+   * only held by the guard instead of by a person: both compare against wordings
+   * that were anticipated. Comparing the whole line against a constant takes
+   * anticipation out of the loop -- ANY qualifier changes the string, and nobody
+   * has to have thought of it first.
+   */
+  const AC1B_VERDICT = "### AC1b「同版本重跑兩次 p95 差 < 1 ms」:**未達**";
+  const COVERAGE_SCOPE =
+    "### ⚠ 考卷到不了的範圍:**`src/driver.ts` 與 `page/main.ts` 整個檔案**";
 
-    // The heading that delivers the verdict, inspected as a unit rather than as
-    // two independent greps that each other's copies can satisfy.
-    const headline = verdicts.filter((line) => /未達|不成立|已達|成立/.test(line));
-    expect(headline).toHaveLength(1);
-    expect(headline[0]).toMatch(/未達|不成立/);
-    expect(headline[0]).not.toMatch(/已達成/);
-
-    // And no qualifier may creep back onto it. This is the exact sentence shape
-    // the ticket had to retract twice.
-    expect(headline[0]).not.toMatch(/條件下|競用|污染|contend/i);
+  it("states the AC1b verdict verbatim, and states it exactly once", () => {
+    const lines = readme.split(/\r?\n/);
+    expect(lines).toContain(AC1B_VERDICT);
+    // Only one line may deliver a verdict on AC1b, so a second, qualified copy
+    // cannot sit quietly beside the clean one.
+    expect(lines.filter((line) => line.includes("AC1b") && /達/.test(line))).toEqual([
+      AC1B_VERDICT,
+    ]);
   });
 
   it("says the AC1b figures carry no qualifier at all", () => {
@@ -284,16 +326,15 @@ describe("required disclosures are in the deliverable, not only in the PR", () =
   it("records, exactly once, that cross-run drift cannot be a regression baseline", () => {
     const statements = statementsAbout(readme, /回歸基線/);
     expect(statements).toHaveLength(1);
-    expect(statements[0]).toMatch(/不能|不可/);
+    expect(statements[0]).toContain("不能拿來當 FTP-49 的回歸基線");
   });
 
-  it("names page/main.ts as beyond the exam where the gap is described", () => {
-    // The gap was written as "driver.ts" everywhere while page/main.ts — the
-    // only source of the primary series and of the GPU string — went unnamed.
-    const gap = statementsAbout(readme, /考卷到不了/);
-    expect(gap).toHaveLength(1);
-    expect(gap[0]).toContain("page/main.ts");
-    expect(gap[0]).toContain("driver.ts");
+  it("carries the coverage scope verbatim, naming both files", () => {
+    // Written as "driver.ts" everywhere, while page/main.ts -- the only source
+    // of the primary series and of the GPU string -- went unnamed.
+    const lines = readme.split(/\r?\n/);
+    expect(lines).toContain(COVERAGE_SCOPE);
+    expect(statementsAbout(readme, /考卷到不了/)).toHaveLength(1);
   });
 
   it("records the first measured memory growth, its route, and its caveat", () => {
@@ -315,23 +356,43 @@ describe("required disclosures are in the deliverable, not only in the PR", () =
  * words. A limitation that ships in every artefact deserves the same treatment
  * as the README.
  */
-describe("the report's own limitations cover each disclosed gap", () => {
-  const text = KNOWN_LIMITATIONS.join("\n");
+/**
+ * The report's limitations, compared WHOLE against a declared constant.
+ *
+ * The previous version joined the array and searched for substrings — the very
+ * method the README half had just been rebuilt to abandon, written into the
+ * same commit for the other half. My own diagnosis, landing on me: the fix
+ * covered the half that was pointed at.
+ *
+ * It failed the way substring searches fail. page/main.ts appeared in two
+ * entries and readGpu in two, so sibling copies held the assertions up:
+ * narrowing the coverage entry to driver.ts survived, deleting the readGpu
+ * disclosure survived, and prepending one catch-all entry that mentions
+ * everything survived — precisely the shape the old comment claimed to prevent,
+ * since `length >= 5` blocks removal and not addition.
+ *
+ * Whole-array equality has none of those degrees of freedom: editing an entry,
+ * dropping one or adding one all fail, and each becomes a deliberate change
+ * with a diff somebody reads.
+ */
+describe("the report's own limitations are exactly the disclosed set", () => {
+  const EXPECTED_LIMITATIONS: readonly string[] = [
+    "externalGpuLoad.foreignProcessesPresent 目前在 reference rig 上尚未觀測到 false:" +
+      "owner 的 Brave 與 Acrobat 常駐於同一顆 GPU。true 代表偵測到常駐行程," +
+      "不代表本次量測受到干擾(消費級卡無 per-process 利用率)。",
+    "中斷路徑:runBench 的 abort 處理與 --max-seconds 已端到端驗證(報告會寫出且標記 invalid)," +
+      "但 Node 的 SIGINT handler 在真實 console Ctrl-C 下是否觸發,尚未在本平台驗證 —— " +
+      "Windows 上 kill 與 child.kill('SIGINT') 都是 TerminateProcess,無法用來驗證。",
+    "frameTimesMs 是 widget.render() 的主執行緒耗時,含 tile ingest、不含 GPU 非同步時間;" +
+      "本輸出不足以判定 D1 的 6 ms 翻案條件(詳見 bench/README.md)。",
+    "考卷到不了的範圍是 src/driver.ts 與 page/main.ts 兩個完整檔案。page/main.ts 沒有任何 runtime 覆蓋," +
+      "而它握有逐幀計時迴圈(本報告 frameTimesMs 的唯一來源)與 readGpu()(gpuRenderer/gpuAccepted 的唯一來源)。" +
+      "已實測:把 readGpu() 換成寫死字串,全部閘門仍然通過且 gpuAccepted 仍為 true。",
+    "跨 run 的 p95 漂移不可作為回歸基線:同版本四次冷快取的 p95 全距為 80.70 ms(中位數的 21.84%)," +
+      "而報告目前沒有欄位能區分場景、網路與機器熱狀態這三種成因。",
+  ];
 
-  it.each([
-    ["the GPU-load flag has never been observed false here", /false/],
-    ["the console Ctrl-C wiring is unverified", /Ctrl-C|SIGINT/],
-    ["the output cannot adjudicate D1's 6 ms", /6 ms|D1/],
-    ["page/main.ts is beyond the exam", /page\/main\.ts/],
-    ["readGpu is the single source of the GPU string", /readGpu/],
-    ["cross-run drift is not a regression baseline", /回歸基線/],
-  ])("states: %s", (_topic, pattern) => {
-    expect(text).toMatch(pattern);
-  });
-
-  it("keeps one entry per gap rather than one entry mentioning everything", () => {
-    // A single paragraph listing all of them would satisfy every case above and
-    // then vanish wholesale in one edit.
-    expect(KNOWN_LIMITATIONS.length).toBeGreaterThanOrEqual(5);
+  it("matches the declared set exactly", () => {
+    expect(KNOWN_LIMITATIONS).toEqual(EXPECTED_LIMITATIONS);
   });
 });
