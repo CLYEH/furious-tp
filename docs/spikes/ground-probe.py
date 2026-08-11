@@ -741,6 +741,13 @@ def polygons_from_shapefile(path, encoding="utf-8"):
     return polys
 
 
+#: The narrow reading: footway and ditch only, leaving medians credited to the
+#: road mesh. Reported alongside the full set so the carriageway share is a
+#: RANGE rather than a point — which column set counts is a semantic judgement
+#: (§13.5 criterion 2), and a judgement with no width pretends to be a
+#: measurement.
+NARROW_NON_CARRIAGEWAY_COLUMNS = ("SWALK_AREA", "DITCH_AREA")
+
 #: Attribute columns of the city road survey that are NOT carriageway. The
 #: road-use polygon includes the footway, the ditch and the median, and FTP-33
 #: paves none of them — §7.1 argues exactly that about OSM footways, so
@@ -829,6 +836,34 @@ def corridor_from(lines_by_class, halfwidth_m: float, city_polys=None):
                 if len(line) >= 2:
                     parts.append(LineString(line).buffer(halfwidth_m))
     return unary_union(parts) if parts else Polygon()
+
+
+def blank_envelope(
+    true_blank_m2,
+    credited_m2,
+    building_contribution_m2,
+    non_lane_range,
+    proxy_ratio_range,
+):
+    """Combine the two propagated uncertainties into one interval.
+
+    `non_lane_range` is how much of the surveyed road surface is not
+    carriageway (a semantic judgement, so a range); `proxy_ratio_range` is the
+    measured span of NLSC footprint area against OSM's. A ratio BELOW 1 means
+    the proxy overstates what the tiles cover, so the blank grows.
+
+    Lives here rather than inline in `cmd_blank` because arithmetic inside a
+    command cannot be graded: mutants that collapsed this range to a point, or
+    that replaced the measured asymmetric span with a symmetric one, survived
+    while the exam stayed green.
+    """
+    lo_share, hi_share = min(non_lane_range), max(non_lane_range)
+    corners = [
+        true_blank_m2 + share * credited_m2 + (1.0 - ratio) * building_contribution_m2
+        for share in (lo_share, hi_share)
+        for ratio in proxy_ratio_range
+    ]
+    return min(corners), max(corners)
 
 
 def blank_split(covered, corridor, buildings, bbox: BBox, surveyed_road=None) -> dict:
@@ -1172,11 +1207,23 @@ def cmd_blank(args) -> int:
     surveyed = unary_union(city).intersection(clip) if city else None
     if args.city_roads:
         shares = road_attribute_shares(args.city_roads, bbox, args.city_encoding)
+        narrow = road_attribute_shares(
+            args.city_roads, bbox, args.city_encoding, NARROW_NON_CARRIAGEWAY_COLUMNS
+        )
         report["road_attribute_shares"] = shares
-        non_lane = shares["non_carriageway_share"] or 0.0
+        report["road_attribute_shares_narrow"] = narrow
+        non_lane_hi = shares["non_carriageway_share"] or 0.0
+        non_lane_lo = narrow["non_carriageway_share"] or 0.0
     else:
-        non_lane = 0.0
-    report["non_carriageway_share_applied"] = non_lane
+        non_lane_hi = non_lane_lo = 0.0
+    report["non_carriageway_share_range"] = [non_lane_lo, non_lane_hi]
+
+    # The building proxy's span is MEASURED, and it is not symmetric: NLSC to
+    # OSM footprint ratios came out 0.824 .. 1.150, i.e. -17.6% / +15.0%. Using
+    # +/-15% would clip the conservative end that the report tells the owner to
+    # quote, so the measured extremes are carried through as they are.
+    proxy_lo, proxy_hi = args.proxy_ratio_min, args.proxy_ratio_max
+    report["building_proxy_ratio_range"] = [proxy_lo, proxy_hi]
 
     for name, features in sources.items():
         built = build(features)
@@ -1186,13 +1233,21 @@ def cmd_blank(args) -> int:
         for rule_name, corridor in corridors:
             row = blank_split(covered, corridor, buildings, bbox, surveyed)
             credited = row.get("blank_credited_to_surveyed_road_m2", 0.0)
-            adjusted = row["true_blank_m2"] + non_lane * credited
             contribution = row["building_contribution_m2"]
-            row["carriageway_adjusted_blank_m2"] = round(adjusted, 1)
-            row["carriageway_adjusted_frac"] = round(adjusted / bbox.area_m2, 6)
-            row["building_proxy_interval_frac"] = [
-                round((adjusted - 0.15 * contribution) / bbox.area_m2, 6),
-                round((adjusted + 0.15 * contribution) / bbox.area_m2, 6),
+            row["carriageway_adjusted_frac_range"] = [
+                round((row["true_blank_m2"] + non_lane_lo * credited) / bbox.area_m2, 6),
+                round((row["true_blank_m2"] + non_lane_hi * credited) / bbox.area_m2, 6),
+            ]
+            low, high = blank_envelope(
+                row["true_blank_m2"],
+                credited,
+                contribution,
+                (non_lane_lo, non_lane_hi),
+                (proxy_lo, proxy_hi),
+            )
+            row["envelope_frac"] = [
+                round(low / bbox.area_m2, 6),
+                round(high / bbox.area_m2, 6),
             ]
             row.update({"source": name, "rule": rule_name})
             report["results"].append(row)
@@ -1213,7 +1268,15 @@ def cmd_avail(args) -> int:
     return 0
 
 
-def main(argv=None) -> int:
+def build_parser() -> argparse.ArgumentParser:
+    """The CLI surface, separated so the exam can check the DOCUMENTED commands.
+
+    Every `ground-probe` invocation printed in `ground-colouring.md` is parsed
+    against this in the self-test. Round 3 deleted `--road-halfwidth` and left
+    a documented command in §4.3 that no longer ran — and that command produces
+    candidate A's headline numbers. A flag can now only be removed by also
+    fixing the prose that uses it.
+    """
     parser = argparse.ArgumentParser(prog="ground-probe", description=__doc__)
     sub = parser.add_subparsers(dest="cmd", required=True)
 
@@ -1252,6 +1315,18 @@ def main(argv=None) -> int:
     p_b.add_argument("--tags", help="path to etl/osm/tags.py (drivable class set)")
     p_b.add_argument("--city-roads", help="city road-surface shapefile (measured)")
     p_b.add_argument("--city-encoding", default="utf-8")
+    p_b.add_argument(
+        "--proxy-ratio-min",
+        type=float,
+        default=0.824,
+        help="lowest measured NLSC/OSM footprint ratio (§7.3)",
+    )
+    p_b.add_argument(
+        "--proxy-ratio-max",
+        type=float,
+        default=1.150,
+        help="highest measured NLSC/OSM footprint ratio (§7.3)",
+    )
     p_b.set_defaults(func=cmd_blank)
 
     p_a = sub.add_parser("avail", help="availability sampling")
@@ -1261,7 +1336,11 @@ def main(argv=None) -> int:
     p_a.add_argument("--timeout", type=float, default=20.0)
     p_a.set_defaults(func=cmd_avail)
 
-    args = parser.parse_args(argv)
+    return parser
+
+
+def main(argv=None) -> int:
+    args = build_parser().parse_args(argv)
     return args.func(args)
 
 

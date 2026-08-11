@@ -608,6 +608,34 @@ def test_blank_split_reports_what_the_building_term_removed():
     assert abs(split["building_contribution_m2"] - 2000.0) < 1e-6, split
 
 
+def test_blank_envelope_carries_both_uncertainties_and_stays_asymmetric():
+    """The published interval's arithmetic, graded (S11 / S12).
+
+    Round 4 found both of these living inline in `cmd_blank`, where nothing
+    could reach them: a mutant collapsing the carriageway range to a point
+    survived, and so did one replacing the measured asymmetric proxy span with
+    a symmetric +/-15%.
+
+    Worked by hand: blank 1000, credited 500, building contribution 200.
+      lowest  = 1000 + 0.1978*500 + (1-1.150)*200 = 1068.9
+      highest = 1000 + 0.2892*500 + (1-0.824)*200 = 1179.8
+    """
+    low, high = gp.blank_envelope(1000.0, 500.0, 200.0, (0.1978, 0.2892), (0.824, 1.150))
+    assert abs(low - 1068.9) < 1e-6, low
+    assert abs(high - 1179.8) < 1e-6, high
+
+    # A point carriageway share must NOT produce the same interval as a range.
+    point_low, point_high = gp.blank_envelope(
+        1000.0, 500.0, 200.0, (0.2892, 0.2892), (0.824, 1.150)
+    )
+    assert (point_low, point_high) != (low, high)
+
+    # The measured span is not symmetric: 0.824 is 17.6% below 1, 1.150 is
+    # 15.0% above. The distances from the un-propagated value must differ.
+    base = 1000.0 + 0.2892 * 500.0
+    assert abs((point_high - base) - (base - point_low)) > 1.0, (point_low, point_high)
+
+
 def test_surveyed_road_credit_excludes_what_buildings_already_cover():
     """The carriageway share applies to surveyed road only, minus buildings.
 
@@ -678,11 +706,16 @@ def _fixture_road_shapefile():
     straddling = [
         [(90.0, 0.0), (90.0, 10.0), (110.0, 10.0), (110.0, 0.0), (90.0, 0.0)]
     ]
+    # EVERY column carries a distinct non-zero value, so dropping any one of
+    # them changes the total. The first version left CEN_MEDIAN and CAR_MEDIAN
+    # at zero, and a mutant that shortened the column list to two stayed green
+    # (N9) — the field selection is a semantic choice, and §13.5's second
+    # criterion is exactly about semantic choices, so it has to be pinned.
     return _write_shapefile(
         "roads",
         [inside, straddling],
         fields=gp.NON_CARRIAGEWAY_COLUMNS,
-        records=[(20.0, 5.0, 0.0, 0.0), (20.0, 0.0, 0.0, 0.0)],
+        records=[(20.0, 5.0, 3.0, 1.0), (20.0, 0.0, 0.0, 0.0)],
     )
 
 
@@ -736,10 +769,19 @@ def test_road_attribute_shares_prorates_and_reports_a_fraction():
     assert shares["records"] == 2, shares
     # 100 fully inside + 100 of the 200 straddling one.
     assert abs(shares["road_union_m2"] - 200.0) < 1e-6, shares
-    # Sidewalk: 20 whole + 20 * 0.5 pro-rated = 30; ditch 5. Not 45.
+    # Sidewalk: 20 whole + 20 * 0.5 pro-rated = 30; not 40.
     assert abs(shares["per_column_m2"]["SWALK_AREA"] - 30.0) < 1e-6, shares
-    assert abs(shares["non_carriageway_m2"] - 35.0) < 1e-6, shares
-    assert abs(shares["non_carriageway_share"] - 0.175) < 1e-4, shares
+    # Every column is counted: 30 + 5 + 3 + 1 = 39. Dropping any one moves it.
+    for column, expected in (("DITCH_AREA", 5.0), ("CEN_MEDIAN", 3.0), ("CAR_MEDIAN", 1.0)):
+        assert abs(shares["per_column_m2"][column] - expected) < 1e-6, (column, shares)
+    assert abs(shares["non_carriageway_m2"] - 39.0) < 1e-6, shares
+    assert abs(shares["non_carriageway_share"] - 0.195) < 1e-4, shares
+    assert set(gp.NON_CARRIAGEWAY_COLUMNS) == {
+        "SWALK_AREA",
+        "DITCH_AREA",
+        "CEN_MEDIAN",
+        "CAR_MEDIAN",
+    }, gp.NON_CARRIAGEWAY_COLUMNS
 
 
 def test_drivable_classes_come_from_the_pipeline_not_a_copy():
@@ -790,6 +832,77 @@ def test_highways_by_class_filters_to_the_requested_set():
     payload = {"elements": [way("residential"), way("footway")]}
     assert set(gp.highways_by_class(payload)) == {"residential", "footway"}
     assert set(gp.highways_by_class(payload, {"residential"})) == {"residential"}
+
+
+# --- the report's own commands must still run -------------------------------
+
+
+def _documented_invocations():
+    """Every `ground-probe` command line printed in the report, as argv lists.
+
+    Joins shell line continuations and drops the interpreter and script path,
+    so what is left is exactly what argparse must accept.
+    """
+    report = PROBE.with_name("ground-colouring.md")
+    if not report.is_file():
+        raise Unavailable(f"needs the report beside the probe at {report}")
+    joined = report.read_text(encoding="utf-8").replace("\\\n", " ")
+    found = []
+    for line in joined.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("python docs/spikes/ground-probe.py"):
+            found.append(stripped.split()[2:])  # drop "python" and the script
+    return found
+
+
+def test_every_documented_command_is_still_accepted_by_the_cli():
+    """The report's own commands are parsed against the real parser.
+
+    Round 3 removed `--road-halfwidth` and `--highways` from `measure` and left
+    two documented commands dying with "unrecognized arguments" — one of which
+    produces candidate A's headline numbers and the answer to AC3. AC2 requires
+    every number to carry the command that made it, so a command that cannot
+    run is a missing number.
+
+    This checks the CLI CONTRACT, not the measurement: argparse validates flags
+    and types without touching the filesystem, so the report's placeholder
+    paths (`<解壓目錄>/細計-面`) are fine exactly as written.
+    """
+    import contextlib
+    import io
+
+    invocations = _documented_invocations()
+    assert invocations, "no ground-probe commands found in the report"
+    parser = gp.build_parser()
+    broken = []
+    for tokens in invocations:
+        buffer = io.StringIO()
+        try:
+            with contextlib.redirect_stderr(buffer):
+                parser.parse_args(tokens)
+        except SystemExit:
+            broken.append((" ".join(tokens)[:80], buffer.getvalue().strip()[-80:]))
+    assert not broken, broken
+
+
+def test_the_documented_command_check_can_actually_fail():
+    """Control for the case above: a bad flag must be rejected.
+
+    Without it, a parser that accepted anything — or an extractor that found
+    nothing — would be indistinguishable from a clean report.
+    """
+    import contextlib
+    import io
+
+    parser = gp.build_parser()
+    with contextlib.redirect_stderr(io.StringIO()):
+        try:
+            parser.parse_args(
+                ["measure", "--area", "a", "--input", "b", "--no-such-flag", "x"]
+            )
+        except SystemExit:
+            return
+    raise AssertionError("the parser accepted a flag that does not exist")
 
 
 # --- runner ----------------------------------------------------------------
