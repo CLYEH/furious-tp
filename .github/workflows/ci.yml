@@ -46,18 +46,19 @@ jobs:
             # npm gates: the docs-only reduction, unchanged.
             if [ "$docs_only" = true ]; then gates=false; else gates=true; fi
 
-            # Markdown: ANY changed *.md is linted. docs-only is not a
-            # precondition — that was the hole that let a PR mixing .md with
-            # non-.md files (contracts/) skip markdown lint entirely. The
-            # docs-only arm is kept so a docs-only PR carrying no .md at all
-            # (e.g. only docs/*.png) still gets the reduced set it gets today.
-            if printf '%s\n' "$changed" | grep -qE '\.md$'; then md=true; else md=false; fi
+            # Markdown: ANY changed *.md is linted — docs-only is not a
+            # precondition, which was the hole that let a .md + non-.md PR
+            # (contracts/) skip lint. The docs-only arm stays so a docs-only
+            # PR carrying no .md (docs/*.png) keeps the set it gets today.
+            # grep -E >/dev/null, never -q: -q exits at the first match, so
+            # pipefail reads a MATCH as a SIGPIPE'd failed pipeline (B-1).
+            if printf '%s\n' "$changed" | grep -E '\.md$' > /dev/null; then md=true; else md=false; fi
             if [ "$md" = true ] || [ "$docs_only" = true ]; then docs=true; else docs=false; fi
 
             # Python: changes under scene-pipeline/ get ruff + pytest, unless
             # the PR is docs-only — a README-only change is not a code change,
             # and a docs-only PR must not pay for the Python toolchain.
-            if printf '%s\n' "$changed" | grep -qE '^scene-pipeline/'; then
+            if printf '%s\n' "$changed" | grep -E '^scene-pipeline/' > /dev/null; then
               pipeline=true
             else
               pipeline=false
