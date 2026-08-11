@@ -40,7 +40,14 @@ npm run lint / typecheck / build / test
 
 - 能滿足 approving-review 要求的帳號只有 `CLYEH` 與 bot 兩個(C1),**而 `CLYEH` 那把憑證 agent 摸得到**。要求的數字是 1 還是更多,都不改變這個結論。
 - GitHub 的「不能核准自己的 PR」是以**帳號**為單位,不是以**行為者**為單位。bot 開 PR、再以 owner 帳號 approve,GitHub 看到的是兩個不同帳號:規則通過,不會回 422。C3 因此永遠是 `[]` —— **那個 `[]` 不代表分離成立**,只代表沒人笨到用同一個帳號兩邊都做。
-- 於是**非治理檔**的 PR,沒有任何機制阻止 agent 自行放行。治理檔擋得住,靠的是 code owner 那一條,不是靠兩層 review。
+- 於是 **approve 這一步**,非治理檔的 PR 沒有任何機制阻止 agent 自行放行。治理檔擋得住,靠的是 code owner 那一條(C6),不是靠兩層 review。
+
+而 **merge 那一步比 approve 更寬:所有路徑都沒有機制。**
+
+- branch protection 的 `restrictions` 是 `null`(Layer 2 以 admin 憑證實測),而 bot 具 write(C1,不需 admin 即可複核)。所以治理檔 PR 一旦拿到 code-owner 核准,**bot 帳號按得下那個 merge** —— approve 那一步治理檔擋得住,merge 那一步治理檔也擋不住。
+- 這**不是未授權的暴露,是被記錄下來的授權**:owner 已明確授權 agent 自行 merge 自己的 PR。治理檔則照上面〈Workflow rules〉那條走 owner。兩者都是**授權範圍**,不是存取控制。
+- 因此本檔上面那句「治理檔…只有 human 能 merge」**同樣是紀律,不是機制**。這一節的工作就是替本檔的宣稱分類,那一條不能自己豁免。
+- 附帶:`mergedBy` 記錄的是**哪把憑證按的**,不是**誰做的決定**。拿它當 human-in-the-loop 的證據會讀錯 —— 這也是為什麼 agent 代按的 merge 該用 bot 憑證,而不是借 owner 帳號留下一個假訊號。
 - 附帶,同源的第二個缺口(FTP-62 round 2):簽核者身分同時是 repo owner,@-mention 通知不到人;而提交一次 CHANGES_REQUESTED 會消耗掉 pending 的 review request。兩者疊加 —— **每一輪 review 之後簽核者都不會被通知**,「有人在看」這件事本身也是靠紀律撐著。
 
 ### 因此
@@ -65,13 +72,13 @@ Agent 的操作結論:
 query($owner:String!,$name:String!){repository(owner:$owner,name:$name){pullRequests(first:100){totalCount nodes{number merged author{login} reviews(first:50,states:APPROVED){totalCount nodes{author{login}}}}}}}
 ```
 
-**C0** 先確認這個查詢看得完 —— `first:100` 是硬上限:
+**C0** 先確認這個查詢看得完 —— `first:100` 與 `first:50` 都是硬上限:
 
 ```bash
-gh api graphql -F owner=CLYEH -F name=furious-tp -f query='<Q>' --jq '.data.repository.pullRequests.totalCount'
+gh api graphql -F owner=CLYEH -F name=furious-tp -f query='<Q>' --jq '[.data.repository.pullRequests.totalCount,([.data.repository.pullRequests.nodes[].reviews.totalCount]|max)]|@tsv'
 ```
 
-輸出若超過 100,C2–C4 的結論**不成立**,必須改成分頁查詢再讀一次。
+兩個數字:PR 總數、單一 PR 的最多核准數。前者超過 100 或後者超過 50,C2–C4 的結論**不成立**,必須改成分頁查詢再讀一次。**截斷不會報錯,只會讓下面三條安靜地少看幾筆** —— 所以先跑這條。
 
 **C1** repo 只有兩個 collaborator:
 
@@ -79,7 +86,7 @@ gh api graphql -F owner=CLYEH -F name=furious-tp -f query='<Q>' --jq '.data.repo
 gh api repos/CLYEH/furious-tp/collaborators --jq '.[]|[.login,.role_name]|@tsv'
 ```
 
-只該有 `CLYEH admin` 與 `yclawlobster write` 兩行。出現第三個帳號,「誰能滿足 review 要求」就變了,本節要重寫。
+只該有 `CLYEH admin` 與 `yclawlobster write` 兩行。出現第三個帳號,「誰能滿足 review 要求」就變了,本節要重寫。這條之所以承重,是因為 repo 是 **public**:**任何 GitHub 使用者都能*提交* review,只有 write 以上能*滿足* review 要求。** 名單短不等於沒人看得到,是等於沒幾個人按得動。
 
 **C2** 史上核准過 PR 的帳號集合:
 
@@ -111,23 +118,29 @@ gh api graphql -F owner=CLYEH -F name=furious-tp -f query='<Q>' --jq '[.data.rep
 gh api repos/CLYEH/furious-tp/branches/develop/protection
 ```
 
-**這條需要 admin。** 本檔因此不複述它的數值(必要檢查清單、review 數量)—— 以指令輸出為準。用 bot 憑證跑會得到 HTTP **404**(不是 403;GitHub 對權限不足的這個端點回 404),而那個 404 本身就是證據:**agent 連保護設定長什麼樣都讀不到,只能照著紀律走。**
+**這條需要 admin。** 本檔因此不複述它的數值(必要檢查清單、review 數量)—— 以指令輸出為準。**非 admin 憑證讀不到**(實測:bot 憑證 404、未認證 401)。**承重的是「讀不到」,不是特定狀態碼** —— 拿到 403 或別的碼不代表文件錯了,只有拿到 200 才代表這一節要重寫。agent 連保護設定長什麼樣都讀不到,只能照著紀律走。
 
 **C5b** 同一件事有一個粗粒度版本,**不需要 admin**:
 
 ```bash
-gh api repos/CLYEH/furious-tp/branches --jq '.[]|[.name,(.protected|tostring)]|@tsv'
+gh api --paginate repos/CLYEH/furious-tp/branches --jq '.[]|[.name,(.protected|tostring)]|@tsv'
 ```
+
+(`--paginate` 不能省:預設每頁 30,branch 一多,那三行會**整行消失**而不是變 `false` —— 一個看起來不像失敗的失敗。)
 
 `develop`、`main`、`test` 三條都應為 `true`(`test` 會自動部署,所以它一起算)。這條的界線要講清楚:**agent 查得出保護被整個關掉,查不出保護被改鬆。** 要看鬆緊只能靠 C5,而 C5 要 admin。
 
-**C6** code-owner 要求不只是寫在檔案裡,而是真的會生效。開一個動到治理檔的 PR,**在手動指定任何 reviewer 之前**查:
+**C6** code-owner 要求不只是寫在檔案裡,而是真的會生效。對一個動到治理檔的 PR:
 
 ```bash
-gh api repos/CLYEH/furious-tp/pulls/<n>/requested_reviewers --jq '.users[].login'
+gh api graphql -F owner=CLYEH -F name=furious-tp -F num=<n> -f query='query($owner:String!,$name:String!,$num:Int!){repository(owner:$owner,name:$name){pullRequest(number:$num){reviewRequests(first:10){nodes{asCodeOwner requestedReviewer{... on User{login}}}}}}}'
 ```
 
-應含 `CLYEH`,且是 GitHub 依 `.github/CODEOWNERS` 自動加的。手動指定過就分不出來了,所以順序很重要。
+應得 `{asCodeOwner: true, requestedReviewer: {login: CLYEH}}`。
+
+**承重的是 `asCodeOwner`,不是那個 `CLYEH`。** 手動送出的 review request 同樣會讓 `CLYEH` 出現,但 `asCodeOwner` 是 `false` —— 這個欄位是唯一能分辨「CODEOWNERS 自動指派」與「有人手動點的」的東西。REST 的 `requested_reviewers` **沒有**任何出處欄位(整包只有 `teams` / `users`,`users[]` 全是一般 user 欄位),所以拿 REST 查這件事,一條手動 request 就會讓它照樣印出 `CLYEH` 而通過 —— 那是**用紀律守一條本該由機制守的宣稱**,正是本節在講的病。
+
+限制寫在這裡:**review request 一旦被簽核者提交 review 就會被消耗**,`reviewRequests` 隨即變 `[]`。所以這條只在 pending 期間查得到,不是「在手動指定之前」——**時機是機制決定的,不是紀律決定的。**
 
 **C7** 沒有第二套規則在 branch protection 旁邊:
 
