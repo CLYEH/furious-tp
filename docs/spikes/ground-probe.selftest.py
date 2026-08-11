@@ -592,6 +592,37 @@ def test_blank_split_is_order_independent_and_names_the_overlap():
     assert total > split["gap_m2"], (total, split["gap_m2"])
 
 
+def test_blank_split_reports_what_the_building_term_removed():
+    """The building term is a PROXY, so its size must be published (S8-5).
+
+    §7 turns the NLSC/OSM ratio uncertainty into an interval by scaling this
+    figure; reporting it as 0 would silently collapse that interval to a point.
+    Buildings here remove 2000 m^2 of blank, and nothing else does.
+    """
+    bbox = gp.BBox(0.0, 0.0, 100.0, 100.0)
+    covered = Poly(square(0, 0, 100, 50))
+    corridor = Poly(square(0, 50, 100, 70))
+    buildings = Poly(square(0, 70, 100, 90))
+    split = gp.blank_split(covered, corridor, buildings, bbox)
+    assert abs(split["true_blank_m2"] - 1000.0) < 1e-6, split
+    assert abs(split["building_contribution_m2"] - 2000.0) < 1e-6, split
+
+
+def test_surveyed_road_credit_excludes_what_buildings_already_cover():
+    """The carriageway share applies to surveyed road only, minus buildings.
+
+    Counting ground that a building already occupies would let the sidewalk
+    adjustment add area twice (S8-6). Surveyed road spans y 50..80, buildings
+    y 70..90, so the credit is the 50..70 band: 2000 m^2, not 3000.
+    """
+    bbox = gp.BBox(0.0, 0.0, 100.0, 100.0)
+    covered = Poly(square(0, 0, 100, 50))
+    surveyed = Poly(square(0, 50, 100, 80))
+    buildings = Poly(square(0, 70, 100, 90))
+    split = gp.blank_split(covered, surveyed, buildings, bbox, surveyed)
+    assert abs(split["blank_credited_to_surveyed_road_m2"] - 2000.0) < 1e-6, split
+
+
 def test_corridor_keeps_measured_surface_and_assumed_buffer_separable():
     """A zero half-width must yield ONLY the measured surface (R6).
 
@@ -606,12 +637,125 @@ def test_corridor_keeps_measured_surface_and_assumed_buffer_separable():
     assert gp.corridor_from(lines, 3.0, city).area > measured_only.area + 500
 
 
+#: Temp dirs holding generated shapefile fixtures, kept alive for the process.
+_FIXTURE_DIRS = []
+
+
+def _write_shapefile(name, shapes, fields=(), records=()):
+    """Write a throwaway shapefile with pyshp and return its base path."""
+    import tempfile
+
+    try:
+        import shapefile as pyshp
+    except ImportError as exc:  # pyshp is only needed by the shapefile cases
+        raise Unavailable(f"needs pyshp to build a shapefile fixture ({exc})") from exc
+
+    tmp = tempfile.TemporaryDirectory()
+    _FIXTURE_DIRS.append(tmp)
+    base = Path(tmp.name) / name
+    writer = pyshp.Writer(str(base), shapeType=pyshp.POLYGON)
+    for field in fields:
+        writer.field(field, "N", decimal=2)
+    if not fields:
+        writer.field("ID", "C", size=4)
+    for i, shape in enumerate(shapes):
+        writer.poly(shape)
+        writer.record(*(records[i] if records else ("x",)))
+    writer.close()
+    return base
+
+
+def _fixture_road_shapefile():
+    """Two records, one of them straddling the bbox edge.
+
+    Inside: 10x10 with 20 sidewalk + 5 ditch.
+    Straddling: 20x10 spanning x 90..110, so exactly half lies in a 0..100
+    bbox, carrying 20 sidewalk of which only 10 may be counted. Without the
+    straddling record the pro-rating is a no-op and a mutant that drops it
+    survives (S8-3).
+    """
+    inside = [[(0.0, 0.0), (0.0, 10.0), (10.0, 10.0), (10.0, 0.0), (0.0, 0.0)]]
+    straddling = [
+        [(90.0, 0.0), (90.0, 10.0), (110.0, 10.0), (110.0, 0.0), (90.0, 0.0)]
+    ]
+    return _write_shapefile(
+        "roads",
+        [inside, straddling],
+        fields=gp.NON_CARRIAGEWAY_COLUMNS,
+        records=[(20.0, 5.0, 0.0, 0.0), (20.0, 0.0, 0.0, 0.0)],
+    )
+
+
+def test_city_road_reader_keeps_every_ring_of_a_multi_ring_shape():
+    """Two disjoint rings in one shape are two polygons, not one.
+
+    Today's real file holds a single multi-ring shape, so a reader that dropped
+    the extra rings moved the result by 0.0 pp — latent, not absent (S8). A
+    fixture pins it independently of what today's download happens to contain.
+    """
+    shape = [
+        [(0.0, 0.0), (0.0, 10.0), (10.0, 10.0), (10.0, 0.0), (0.0, 0.0)],
+        [(20.0, 0.0), (20.0, 10.0), (30.0, 10.0), (30.0, 0.0), (20.0, 0.0)],
+    ]
+    polys = gp.polygons_from_shapefile(_write_shapefile("multi", [shape]))
+    assert len(polys) == 2, [p.area for p in polys]
+    assert abs(sum(p.area for p in polys) - 200.0) < 1e-6, [p.area for p in polys]
+
+
+def test_corridor_width_is_pinned_by_area_not_by_an_inequality():
+    """Doubling the half-width must FAIL this case, not merely widen it.
+
+    The corridor was pinned only by `>`, so a mutant that doubled the buffer
+    survived (S8). That is B1's lesson one level down: the value was corrected,
+    but nothing could catch it being changed again. A straight 100 m line
+    buffered by h is 200h plus a half-disc cap at each end — an exact area.
+    """
+    import math
+
+    lines = {"residential": [[(0.0, 50.0), (100.0, 50.0)]]}
+    for halfwidth in (3.0, 6.0):
+        corridor = gp.corridor_from(lines, halfwidth, None)
+        expected = 100.0 * 2 * halfwidth + math.pi * halfwidth**2
+        assert abs(corridor.area - expected) / expected < 0.001, (
+            halfwidth,
+            corridor.area,
+            expected,
+        )
+
+
+def test_road_attribute_shares_prorates_and_reports_a_fraction():
+    """The carriageway share drives §7, so its arithmetic is pinned.
+
+    One 100 m^2 record fully inside the bbox with 20 m^2 of sidewalk and
+    5 m^2 of ditch is a 25% non-carriageway share. A reader that ignored the
+    columns, or summed them without pro-rating, lands somewhere else.
+    """
+    shares = gp.road_attribute_shares(
+        _fixture_road_shapefile(), gp.BBox(0.0, 0.0, 100.0, 100.0), encoding="utf-8"
+    )
+    assert shares["records"] == 2, shares
+    # 100 fully inside + 100 of the 200 straddling one.
+    assert abs(shares["road_union_m2"] - 200.0) < 1e-6, shares
+    # Sidewalk: 20 whole + 20 * 0.5 pro-rated = 30; ditch 5. Not 45.
+    assert abs(shares["per_column_m2"]["SWALK_AREA"] - 30.0) < 1e-6, shares
+    assert abs(shares["non_carriageway_m2"] - 35.0) < 1e-6, shares
+    assert abs(shares["non_carriageway_share"] - 0.175) < 1e-4, shares
+
+
 def test_drivable_classes_come_from_the_pipeline_not_a_copy():
-    """Parsed from `tags.py`, so the probe cannot drift from the pipeline."""
+    """Parsed from `tags.py`, so the probe cannot drift from the pipeline.
+
+    This is the one case that reads outside `docs/spikes/`, so it carries an
+    explicit location dependency. Run from a copy of this directory alone it
+    reports SKIP rather than dying of `FileNotFoundError` — a red that would
+    say nothing about the probe.
+    """
     tags = (
         Path(__file__).resolve().parents[2]
         / "scene-pipeline/src/scene_pipeline/etl/osm/tags.py"
     )
+    if not tags.is_file():
+        raise Unavailable(f"needs the pipeline checkout at {tags}")
     classes = gp.load_drivable_classes(tags)
     assert "residential" in classes and "service" in classes
     # The whole of B1: pedestrian ways are NOT drivable and must not be paved.
@@ -651,22 +795,39 @@ def test_highways_by_class_filters_to_the_requested_set():
 # --- runner ----------------------------------------------------------------
 
 
+class Unavailable(Exception):
+    """The case needs something this checkout does not have.
+
+    Distinct from a failure AND from silence. One case reads the pipeline's
+    `tags.py`, so outside a repo checkout it died as `FileNotFoundError` and
+    took the baseline from 40/40 to 39/40 — a red that says nothing about the
+    probe. Reporting it as a counted SKIP keeps the missing coverage visible
+    instead of trading a false red for a false green.
+    """
+
+
 def main() -> int:
     cases = [
         (name, fn)
         for name, fn in sorted(globals().items())
         if name.startswith("test_") and callable(fn)
     ]
-    failed = 0
+    failed = skipped = 0
     for name, fn in cases:
         try:
             fn()
+        except Unavailable as exc:
+            skipped += 1
+            print(f"  SKIP {name}: {exc}")
         except Exception as exc:  # noqa: BLE001 — a self-test reports, not raises
             failed += 1
             print(f"  FAIL {name}: {type(exc).__name__}: {exc}")
         else:
             print(f"  ok   {name}")
-    print(f"\n{len(cases) - failed}/{len(cases)} passed")
+    passed = len(cases) - failed - skipped
+    print(f"\n{passed}/{len(cases)} passed, {skipped} skipped, {failed} failed")
+    if skipped:
+        print("NOTE: a skip is missing coverage, not a pass.")
     return 1 if failed else 0
 
 

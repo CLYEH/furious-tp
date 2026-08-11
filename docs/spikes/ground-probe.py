@@ -675,17 +675,6 @@ def features_from_overpass(payload: dict) -> tuple[list[Feature], dict]:
     return features, stats
 
 
-def highways_from_overpass(payload: dict) -> list[list[tuple[float, float]]]:
-    lines = []
-    for element in payload.get("elements", []):
-        if element.get("type") != "way":
-            continue
-        geometry = element.get("geometry") or []
-        if len(geometry) >= 2:
-            lines.append(_project(geometry))
-    return lines
-
-
 # --- the drivable network and the road corridor ----------------------------
 
 
@@ -752,6 +741,75 @@ def polygons_from_shapefile(path, encoding="utf-8"):
     return polys
 
 
+#: Attribute columns of the city road survey that are NOT carriageway. The
+#: road-use polygon includes the footway, the ditch and the median, and FTP-33
+#: paves none of them — §7.1 argues exactly that about OSM footways, so
+#: crediting the whole polygon to the road mesh contradicts this report's own
+#: reasoning. Values are areas in m^2 per record.
+NON_CARRIAGEWAY_COLUMNS = ("SWALK_AREA", "DITCH_AREA", "CEN_MEDIAN", "CAR_MEDIAN")
+
+
+def road_attribute_shares(path, bbox: BBox, encoding="utf-8", columns=NON_CARRIAGEWAY_COLUMNS):
+    """What fraction of the surveyed road surface is not carriageway.
+
+    The columns are scalar areas per record, not geometry, so they cannot be
+    subtracted from the union. Each record's attribute is pro-rated by the
+    fraction of that record's polygon lying inside the bbox, which is the most
+    the data supports — and the report states it as a proportion, not as a
+    located area.
+    """
+    import shapefile
+
+    reader = shapefile.Reader(str(path), encoding=encoding)
+    names = [f[0] for f in reader.fields[1:]]
+    clip = bbox.polygon()
+    totals = {c: 0.0 for c in columns}
+    kept = []
+    records = 0
+    for shape_record in reader.iterShapeRecords():
+        geom = shape_record.shape
+        if not geom.points:
+            continue
+        bounds = list(geom.parts) + [len(geom.points)]
+        parts = []
+        for i in range(len(bounds) - 1):
+            ring = geom.points[bounds[i] : bounds[i + 1]]
+            if len(ring) < MIN_RING_POSITIONS:
+                continue
+            poly = Polygon([(float(x), float(y)) for x, y in ring])
+            if not poly.is_valid:
+                poly = make_valid(poly)
+                poly = _polygonal_part(poly)
+            if poly is not None and not poly.is_empty:
+                parts.append(poly)
+        if not parts:
+            continue
+        whole = unary_union(parts)
+        if not whole.intersects(clip):
+            continue
+        records += 1
+        inside = whole.intersection(clip)
+        kept.append(inside)
+        share = (inside.area / whole.area) if whole.area else 0.0
+        values = dict(zip(names, shape_record.record))
+        for column in columns:
+            try:
+                totals[column] += float(values.get(column) or 0.0) * share
+            except (TypeError, ValueError):
+                pass
+    union = unary_union(kept).intersection(clip) if kept else Polygon()
+    total_non_lane = sum(totals.values())
+    return {
+        "records": records,
+        "road_union_m2": float(union.area),
+        "per_column_m2": {k: round(v, 1) for k, v in totals.items()},
+        "non_carriageway_m2": round(total_non_lane, 1),
+        "non_carriageway_share": (
+            round(total_non_lane / union.area, 4) if union.area else None
+        ),
+    }
+
+
 def corridor_from(lines_by_class, halfwidth_m: float, city_polys=None):
     """The road corridor under one explicit rule.
 
@@ -773,7 +831,7 @@ def corridor_from(lines_by_class, halfwidth_m: float, city_polys=None):
     return unary_union(parts) if parts else Polygon()
 
 
-def blank_split(covered, corridor, buildings, bbox: BBox) -> dict:
+def blank_split(covered, corridor, buildings, bbox: BBox, surveyed_road=None) -> dict:
     """Split the uncovered area WITHOUT an order dependency.
 
     An earlier draft subtracted the corridor first and then measured buildings
@@ -788,7 +846,8 @@ def blank_split(covered, corridor, buildings, bbox: BBox) -> dict:
     in_bld = gap.intersection(buildings) if not buildings.is_empty else Polygon()
     both = in_road.intersection(in_bld) if not in_bld.is_empty else Polygon()
     blank = gap.difference(corridor).difference(buildings)
-    return {
+    no_buildings = gap.difference(corridor)
+    out = {
         "gap_m2": round(gap.area, 1),
         "gap_in_corridor_m2": round(in_road.area, 1),
         "gap_in_buildings_m2": round(in_bld.area, 1),
@@ -796,7 +855,17 @@ def blank_split(covered, corridor, buildings, bbox: BBox) -> dict:
         "true_blank_m2": round(blank.area, 1),
         "true_blank_frac_of_bbox": round(blank.area / bbox.area_m2, 6),
         "corridor_frac_of_bbox": round(corridor.area / bbox.area_m2, 6),
+        # How much blank the building term removes. Those buildings are a PROXY
+        # for the NLSC tiles, and the proxy is only good to about +/-15%, so the
+        # report needs this figure to publish an interval instead of asserting a
+        # direction it has not established.
+        "building_contribution_m2": round(no_buildings.area - blank.area, 1),
     }
+    if surveyed_road is not None and not surveyed_road.is_empty:
+        out["blank_credited_to_surveyed_road_m2"] = round(
+            gap.intersection(surveyed_road).difference(buildings).area, 1
+        )
+    return out
 
 
 # --- commands --------------------------------------------------------------
@@ -1021,105 +1090,16 @@ def cmd_measure(args) -> int:
             "fraction": round(grid.fraction, 6),
             "delta_vs_exact": round(grid.fraction - result.fraction, 6),
         }
-    if args.highways:
-        payload = json.loads(Path(args.highways).read_text(encoding="utf-8"))
-        lines = highways_from_overpass(payload)
-        from shapely.geometry import LineString
-
-        corridor = unary_union(
-            [LineString(line).buffer(args.road_halfwidth) for line in lines if len(line) >= 2]
-        )
-        built = build(features)
-        covered = (
-            unary_union(built.geoms).intersection(bbox.polygon())
-            if built.geoms
-            else Polygon()
-        )
-        gap = bbox.polygon().difference(covered)
-        in_road = gap.intersection(corridor)
-        report["uncovered_composition"] = {
-            "road_halfwidth_m": args.road_halfwidth,
-            "highway_ways": len(lines),
-            "uncovered_m2": round(gap.area, 1),
-            "uncovered_road_corridor_m2": round(in_road.area, 1),
-            "uncovered_other_m2": round(gap.area - in_road.area, 1),
-            "road_share_of_uncovered": round(in_road.area / gap.area, 4)
-            if gap.area
-            else None,
-        }
-    print(json.dumps(report, ensure_ascii=False, indent=2))
-    return 0
-
-
-def cmd_combine(args) -> int:
-    """Measure OSM and zoning together — the hybrid question, as one number.
-
-    Answers "does A fill B's holes?" by measuring the union of the two rather
-    than adding their coverages, which would double-count every square metre
-    both of them describe.
-    """
-    bbox = BBox.from_area_file(args.area)
-    osm_payload = json.loads(Path(args.osm).read_text(encoding="utf-8"))
-    osm_features, _ = features_from_overpass(osm_payload)
-    zoning_features, _ = features_from_shapefile(
-        args.shp, args.class_field or "分區簡稱", "zone", args.encoding
-    )
-    zoning_features, dropped = _exclude(zoning_features, set(args.exclude_class or ()))
-
-    only_osm = coverage(osm_features, bbox)
-    only_zoning = coverage(zoning_features, bbox)
-    both = coverage(list(osm_features) + list(zoning_features), bbox)
-
-    osm_built = build(osm_features)
-    zoning_built = build(zoning_features)
-    clip = bbox.polygon()
-    osm_union = unary_union(osm_built.geoms).intersection(clip)
-    zoning_union = unary_union(zoning_built.geoms).intersection(clip)
-    osm_gap = clip.difference(osm_union)
-    filled = osm_gap.intersection(zoning_union)
-
-    report = {
-        "at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
-        "bbox_area_m2": bbox.area_m2,
-        "excluded_classes": dropped,
-        "osm_fraction": round(only_osm.fraction, 6),
-        "zoning_fraction": round(only_zoning.fraction, 6),
-        "union_fraction": round(both.fraction, 6),
-        "osm_gap_m2": round(osm_gap.area, 1),
-        "zoning_fills_of_osm_gap_m2": round(filled.area, 1),
-        "zoning_fills_share_of_osm_gap": round(filled.area / osm_gap.area, 4)
-        if osm_gap.area
-        else None,
-        "still_uncovered_m2": round(clip.difference(unary_union([osm_union, zoning_union])).area, 1),
-    }
-    if args.highways:
-        from shapely.geometry import LineString
-
-        payload = json.loads(Path(args.highways).read_text(encoding="utf-8"))
-        corridor = unary_union(
-            [
-                LineString(line).buffer(args.road_halfwidth)
-                for line in highways_from_overpass(payload)
-                if len(line) >= 2
-            ]
-        )
-        rest = clip.difference(unary_union([osm_union, zoning_union]))
-        report["still_uncovered_road_corridor_m2"] = round(
-            rest.intersection(corridor).area, 1
-        )
-        report["still_uncovered_other_m2"] = round(
-            rest.area - rest.intersection(corridor).area, 1
-        )
     print(json.dumps(report, ensure_ascii=False, indent=2))
     return 0
 
 
 def cmd_blank(args) -> int:
-    """The headline number, under EVERY corridor rule, as a table.
+    """The headline number under EVERY corridor rule, as a table.
 
     This command exists because the report once published a single figure that
     silently depended on one unsourced parameter. A number that moves by 2x
-    across defensible rules is a range, and it has to be produced as one.
+    across defensible rules is a range and has to be produced as one.
     """
     bbox = BBox.from_area_file(args.area)
     clip = bbox.polygon()
@@ -1159,9 +1139,10 @@ def cmd_blank(args) -> int:
             if g.intersects(clip)
         ]
 
-    rules = []
-    rules.append(("all classes @ 8.0 m (原報告)", all_lines, 8.0, None))
-    rules.append(("all classes @ 3.0 m", all_lines, 3.0, None))
+    rules = [
+        ("all classes @ 8.0 m (withdrawn)", all_lines, 8.0, None),
+        ("all classes @ 3.0 m", all_lines, 3.0, None),
+    ]
     if drivable:
         rules.append(("drivable only @ 8.0 m", drv_lines, 8.0, None))
         rules.append(("drivable only @ 3.5 m", drv_lines, 3.5, None))
@@ -1169,9 +1150,7 @@ def cmd_blank(args) -> int:
         rules.append(("city road surface only (measured)", {}, 0.0, city))
         if drivable:
             for hw in (2.5, 3.0, 4.0):
-                rules.append(
-                    (f"city surface + drivable @ {hw} m", drv_lines, hw, city)
-                )
+                rules.append((f"city surface + drivable @ {hw} m", drv_lines, hw, city))
 
     report = {
         "at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
@@ -1182,6 +1161,7 @@ def cmd_blank(args) -> int:
         "city_road_polygons": len(city),
         "results": [],
     }
+
     # Corridors are built ONCE per rule and reused across sources: the same
     # union of several thousand buffers took minutes when it was rebuilt inside
     # the source loop, and it cannot differ between sources anyway.
@@ -1189,13 +1169,31 @@ def cmd_blank(args) -> int:
         (rule_name, corridor_from(lines, hw, polys).intersection(clip))
         for rule_name, lines, hw, polys in rules
     ]
+    surveyed = unary_union(city).intersection(clip) if city else None
+    if args.city_roads:
+        shares = road_attribute_shares(args.city_roads, bbox, args.city_encoding)
+        report["road_attribute_shares"] = shares
+        non_lane = shares["non_carriageway_share"] or 0.0
+    else:
+        non_lane = 0.0
+    report["non_carriageway_share_applied"] = non_lane
+
     for name, features in sources.items():
         built = build(features)
         covered = (
             unary_union(built.geoms).intersection(clip) if built.geoms else Polygon()
         )
         for rule_name, corridor in corridors:
-            row = blank_split(covered, corridor, buildings, bbox)
+            row = blank_split(covered, corridor, buildings, bbox, surveyed)
+            credited = row.get("blank_credited_to_surveyed_road_m2", 0.0)
+            adjusted = row["true_blank_m2"] + non_lane * credited
+            contribution = row["building_contribution_m2"]
+            row["carriageway_adjusted_blank_m2"] = round(adjusted, 1)
+            row["carriageway_adjusted_frac"] = round(adjusted / bbox.area_m2, 6)
+            row["building_proxy_interval_frac"] = [
+                round((adjusted - 0.15 * contribution) / bbox.area_m2, 6),
+                round((adjusted + 0.15 * contribution) / bbox.area_m2, 6),
+            ]
             row.update({"source": name, "rule": rule_name})
             report["results"].append(row)
     print(json.dumps(report, ensure_ascii=False, indent=2))
@@ -1234,8 +1232,6 @@ def main(argv=None) -> int:
     p_m.add_argument("--class-field", default=None)
     p_m.add_argument("--min-hole", type=float, default=100.0)
     p_m.add_argument("--grid-step", type=float, default=None)
-    p_m.add_argument("--highways", default=None)
-    p_m.add_argument("--road-halfwidth", type=float, default=8.0)
     p_m.add_argument("--edge-band", type=float, default=50.0)
     p_m.add_argument(
         "--exclude-class",
@@ -1243,17 +1239,6 @@ def main(argv=None) -> int:
         help="drop every feature with this class value; echoed into the output",
     )
     p_m.set_defaults(func=cmd_measure)
-
-    p_c = sub.add_parser("combine", help="measure OSM and zoning as one union")
-    p_c.add_argument("--area", required=True)
-    p_c.add_argument("--osm", required=True)
-    p_c.add_argument("--shp", required=True)
-    p_c.add_argument("--class-field", default=None)
-    p_c.add_argument("--encoding", default="cp950")
-    p_c.add_argument("--exclude-class", action="append")
-    p_c.add_argument("--highways", default=None)
-    p_c.add_argument("--road-halfwidth", type=float, default=8.0)
-    p_c.set_defaults(func=cmd_combine)
 
     p_b = sub.add_parser("blank", help="true-blank sensitivity across corridor rules")
     p_b.add_argument("--area", required=True)
