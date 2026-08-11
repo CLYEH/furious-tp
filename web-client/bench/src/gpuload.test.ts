@@ -147,12 +147,21 @@ describe("summariseGpuLoad", () => {
   });
 
   it("bounds the process names it copies into the report", () => {
-    // Same rule as everywhere else: a process path is upstream text and the
-    // report is a file other people open.
+    /**
+     * Same rule as everywhere else: a process name comes from the OS and the
+     * report is a file other people open.
+     *
+     * The long part has to be the LAST path segment. Mutation testing caught
+     * the first version of this case asserting nothing at all: it used a long
+     * PATH ending in "evil.exe", and since only the basename is kept the result
+     * was eight characters whether or not the bound existed — deleting the
+     * truncation left this test green.
+     */
+    const longBasename = `${"A".repeat(5000)}.exe`;
     const load = summariseGpuLoad({
       utilisationStart: "1",
       utilisationEnd: "1",
-      computeApps: `999, ${"C:\\x".repeat(5000)}\\evil.exe`,
+      computeApps: `999, C:\\Program Files\\${longBasename}`,
       ourPids: [],
     });
     expect(load.foreignProcesses[0]!.name.length).toBeLessThan(300);
