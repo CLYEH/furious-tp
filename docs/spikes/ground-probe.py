@@ -1189,20 +1189,35 @@ def cmd_blank(args) -> int:
     all_lines = highways_by_class(hw_payload)
     drv_lines = highways_by_class(hw_payload, set(drivable)) if drivable else {}
 
-    # The envelope's building term is a PROXY for the NLSC tiles, and it moves
-    # candidate B by 9.7-13.4 pp. Absent input is therefore a MISSING INPUT, not
-    # "no buildings": every figure that depends on it is withheld and the rows
-    # are stamped, so a run without it can never be mistaken for a run with it.
+    # The envelope's building term is a PROXY for the NLSC tiles and it moves
+    # candidate B by 9.7-13.4 pp, so anything short of real building geometry
+    # is a MISSING INPUT rather than "no buildings".
+    #
+    # `building_input` is derived from what reached the computation, NEVER from
+    # whether the flag appeared. The first version read `args.buildings` and so
+    # stamped `present` on a timed-out Overpass response — 200, valid JSON,
+    # `remark`, zero elements — which reproduced the verify-fail numbers with a
+    # label asserting the input was there. A field describing the input cannot
+    # be decided by the command line.
     buildings = Polygon()
-    building_input = "present" if args.buildings else "absent"
-    if args.buildings:
+    building_features = 0
+    building_remark = None
+    if not args.buildings:
+        building_input = "absent"
+    else:
         payload = json.loads(Path(args.buildings).read_text(encoding="utf-8"))
+        building_remark = payload.get("remark")
         feats, _ = features_from_overpass(
             {"elements": [{**e, "tags": {"landuse": "_b"}} for e in payload.get("elements", [])]}
         )
         built = build(feats)
+        building_features = len(built.geoms)
         if built.geoms:
             buildings = unary_union(built.geoms).intersection(clip)
+        # The test is the AREA, not the flag and not even the element count: a
+        # file of buildings that all fall outside the bbox contributes nothing
+        # to this measurement and must not license the envelope either.
+        building_input = "present" if buildings.area > 0 else "empty"
 
     city = []
     if args.city_roads:
@@ -1256,10 +1271,24 @@ def cmd_blank(args) -> int:
         non_lane_hi = non_lane_lo = 0.0
     report["non_carriageway_share_range"] = [non_lane_lo, non_lane_hi]
     report["building_input"] = building_input
-    if building_input == "absent":
+    report["building_features"] = building_features
+    if building_remark:
+        # Overpass reports query failures in `remark` with HTTP 200, so the
+        # class of failure is recorded — the text itself is upstream body and
+        # is not restated (§2.5).
+        report["building_source_remark"] = True
+    if building_input != "present":
+        reason = {
+            "absent": "--buildings was not given",
+            "empty": (
+                "the buildings file contributed no area inside the bbox"
+                + (" and carries an Overpass remark" if building_remark else "")
+            ),
+        }[building_input]
         print(
-            "warning: --buildings not given; envelope figures are withheld "
-            "(fetch it with `osm --area ... --out ...`)",
+            f"warning: {reason}; envelope figures are withheld. "
+            "Fetch the layer with `osm --area <area> --out <dir>` "
+            "(writes osm-buildings.json).",
             file=sys.stderr,
         )
 
@@ -1284,13 +1313,14 @@ def cmd_blank(args) -> int:
                 round((row["true_blank_m2"] + non_lane_hi * credited) / bbox.area_m2, 6),
             ]
             row["building_input"] = building_input
-            if building_input == "absent":
+            if building_input != "present":
                 # No envelope, and no carriageway range either: both fold in the
                 # building term. Publishing them here is exactly the silent
                 # second answer this guard exists to prevent.
                 row.pop("carriageway_adjusted_frac_range", None)
                 row["withheld"] = (
-                    "envelope needs --buildings; see OSM_FETCHES['buildings']"
+                    "envelope needs building geometry inside the bbox; "
+                    "see OSM_FETCHES['buildings']"
                 )
                 row.update({"source": name, "rule": rule_name})
                 report["results"].append(row)

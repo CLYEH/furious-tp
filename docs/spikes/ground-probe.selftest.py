@@ -818,13 +818,20 @@ def _fixture_osm_highways():
 
 
 def _fixture_osm_buildings():
-    """A building far outside the fixture bbox, so it removes no blank."""
+    """A real building INSIDE the bbox, under already-painted ground.
+
+    Inside matters: `building_input` is now decided by the area that reaches
+    the computation, so a fixture whose buildings all fall outside the bbox is
+    — correctly — indistinguishable from an empty file. Placing it in the
+    landuse-covered southern half keeps the blank fraction at exactly 0.5 while
+    still licensing the envelope.
+    """
     ring = [
-        _ll_offset(5000, 5000),
-        _ll_offset(5050, 5000),
-        _ll_offset(5050, 5050),
-        _ll_offset(5000, 5050),
-        _ll_offset(5000, 5000),
+        _ll_offset(70, 10),
+        _ll_offset(90, 10),
+        _ll_offset(90, 30),
+        _ll_offset(70, 30),
+        _ll_offset(70, 10),
     ]
     return _write_json(
         "osm-buildings.json",
