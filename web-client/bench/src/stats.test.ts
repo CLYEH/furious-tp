@@ -24,6 +24,8 @@ import { describe, expect, it } from "vitest";
 
 import {
   HITCH_THRESHOLD_MS,
+  THROTTLING_DRIFT_RATIO,
+  analyseDrift,
   findHitches,
   onePercentLowSampleCount,
   percentileNearestRank,
@@ -200,5 +202,71 @@ describe("summariseSeries", () => {
     // 0 ms is not poison — a sub-microsecond frame legitimately rounds to it on
     // a coarse clock. Only negatives are impossible.
     expect(() => summariseSeries([0, 1, 2])).not.toThrow();
+  });
+});
+
+/**
+ * Drift, which on this reference rig means thermal throttling.
+ *
+ * The rig is a laptop on a Balanced power plan, and a 15-minute memory cycle is
+ * long enough for it to throttle. A single p95 over the whole run averages the
+ * cool start together with the hot end and reports neither — and the rise is
+ * itself a fact about the rig that FTP-49's thresholds need to know about.
+ *
+ * This is a DIAGNOSTIC, not a verdict: it says "these frames got slower", never
+ * "this run fails".
+ */
+describe("analyseDrift", () => {
+  const flat = (n: number, value: number): number[] => Array.from({ length: n }, () => value);
+
+  it("reports no drift for a flat series", () => {
+    const result = analyseDrift(flat(100, 10));
+    expect(result.driftRatio).toBeCloseTo(1, 10);
+    expect(result.suspectedThrottling).toBe(false);
+  });
+
+  it("flags a series whose late frames are systematically slower", () => {
+    // First half at 10 ms, last half at 14 ms — the shape of a laptop heating up.
+    const series = [...flat(50, 10), ...flat(50, 14)];
+    const result = analyseDrift(series);
+    expect(result.earlyP50Ms).toBeCloseTo(10, 6);
+    expect(result.lateP50Ms).toBeCloseTo(14, 6);
+    expect(result.driftRatio).toBeCloseTo(1.4, 6);
+    expect(result.suspectedThrottling).toBe(true);
+  });
+
+  it("does not flag a series that got faster", () => {
+    const series = [...flat(50, 14), ...flat(50, 10)];
+    const result = analyseDrift(series);
+    expect(result.driftRatio).toBeLessThan(1);
+    expect(result.suspectedThrottling).toBe(false);
+  });
+
+  it("treats exactly the threshold as not yet suspected", () => {
+    expect(THROTTLING_DRIFT_RATIO).toBe(1.1);
+    const series = [...flat(50, 10), ...flat(50, 11)];
+    const result = analyseDrift(series);
+    expect(result.driftRatio).toBeCloseTo(1.1, 10);
+    expect(result.suspectedThrottling).toBe(false);
+  });
+
+  it("compares medians, so one late hitch is not mistaken for throttling", () => {
+    // A single 900 ms stall in the last window would drag a MEAN over the
+    // threshold and report throttling that did not happen. Throttling is a
+    // shift of the whole distribution, which is what a median sees.
+    const series = [...flat(50, 10), ...flat(49, 10), 900];
+    const result = analyseDrift(series);
+    expect(result.suspectedThrottling).toBe(false);
+  });
+
+  it("throws on a series too short to have a beginning and an end", () => {
+    expect(() => analyseDrift([1, 2, 3])).toThrow(RangeError);
+  });
+
+  it("says how many frames each window covered", () => {
+    // Without the window size the ratio cannot be judged: a ratio computed from
+    // two frames is noise, from two thousand it is a finding.
+    const result = analyseDrift(flat(100, 10));
+    expect(result.windowFrames).toBe(25);
   });
 });

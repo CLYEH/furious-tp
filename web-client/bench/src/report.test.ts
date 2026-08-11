@@ -26,12 +26,27 @@ import { describe, expect, it } from "vitest";
 import { REPORT_SCHEMA_VERSION, type RouteMeasurement, assembleReport } from "./report.ts";
 import { summariseSeries } from "./stats.ts";
 
+/**
+ * The reference rig's real renderer string. Not a placeholder: the report is
+ * only valid when the run happened on the rig's discrete GPU, so the fixture
+ * has to be a string that actually passes that check.
+ */
+const RTX_4060 =
+  "ANGLE (NVIDIA, NVIDIA GeForce RTX 4060 Laptop GPU (0x000028A0) Direct3D11 vs_5_0 ps_5_0, D3D11)";
+
+/** The integrated GPU in the same laptop. */
+const INTEL_UHD =
+  "ANGLE (Intel, Intel(R) UHD Graphics (0x0000A788) Direct3D11 vs_5_0 ps_5_0, D3D11)";
+
 const environment = () => ({
   cpu: "test-cpu",
-  gpuRenderer: "ANGLE (NVIDIA, Test GPU, D3D11)",
+  gpuRenderer: RTX_4060,
   browser: "Chrome 151.0.0.0",
+  chromeVersion: "151.0.7922.76",
   os: "Windows 11",
   viewport: { width: 1920, height: 1080 },
+  screen: { width: 1920, height: 1080, estimatedRefreshHz: 60 },
+  power: { charging: true, batteryLevel: 1, note: "navigator.getBattery()" },
   frameRateLimitDefeated: false,
   measurementNote: "scene.render() CPU cost",
 });
@@ -193,6 +208,27 @@ describe("assembleReport — the invalid marker", () => {
   });
 });
 
+describe("assembleReport — drift", () => {
+  it("carries the throttling diagnostic for a series long enough to have one", () => {
+    const rising = [...Array.from({ length: 50 }, () => 10), ...Array.from({ length: 50 }, () => 15)];
+    const report = assembleReport(
+      input({
+        measurements: [measurement("a", "cold", rising), measurement("a", "warm", [7, 8, 9])],
+      }),
+    );
+    expect(report.routes.find((r) => r.cache === "cold")?.drift?.suspectedThrottling).toBe(true);
+    // Diagnostic, not verdict: a hot laptop is a fact about the rig, and
+    // deciding what to do about it is FTP-49's job.
+    expect(report.routes.find((r) => r.cache === "cold")?.valid).toBe(true);
+    expect(report.valid).toBe(true);
+  });
+
+  it("reports drift as unmeasured, not as zero, when the series is too short", () => {
+    const report = assembleReport(input());
+    expect(report.routes.find((r) => r.cache === "cold")?.drift).toBeNull();
+  });
+});
+
 describe("assembleReport — cold and warm stay apart", () => {
   it("gives each cache state its own entry and its own summary", () => {
     // AC3: "冷/熱快取分開記錄". Merged, the cold pass's first-load cost would be
@@ -218,6 +254,66 @@ describe("assembleReport — cold and warm stay apart", () => {
   it("does not collapse two cache states of one route into one entry", () => {
     const report = assembleReport(input());
     expect(report.routes.filter((r) => r.routeId === "a")).toHaveLength(2);
+  });
+});
+
+/**
+ * The reference rig is a hybrid-graphics laptop. Which GPU Chrome lands on
+ * varies with power state, window placement and Windows' graphics preference,
+ * and the same bench differs several-fold between the two. A report that does
+ * not pin the GPU is a number labelled RTX that may have come from the iGPU —
+ * worse than no report, because it looks usable.
+ */
+describe("assembleReport — which GPU actually drew this", () => {
+  it("puts the renderer string at the top level, beside the validity flag", () => {
+    const report = assembleReport(input());
+    const keys = Object.keys(report);
+    expect(keys.slice(0, 4)).toEqual(["valid", "invalidReason", "gpuRenderer", "gpuAccepted"]);
+    expect(report.gpuRenderer).toBe(RTX_4060);
+  });
+
+  it("accepts a run on the rig's discrete GPU", () => {
+    const report = assembleReport(input());
+    expect(report.gpuAccepted).toBe(true);
+    expect(report.valid).toBe(true);
+  });
+
+  /**
+   * The control. The only difference between this case and the one above is the
+   * renderer string, so a green here would prove the check does nothing.
+   */
+  it("invalidates the whole report when the run landed on the integrated GPU", () => {
+    const onIgpu = assembleReport(
+      input({ environment: { ...environment(), gpuRenderer: INTEL_UHD } }),
+    );
+    expect(onIgpu.gpuAccepted).toBe(false);
+    expect(onIgpu.valid).toBe(false);
+    expect(onIgpu.invalidReason).toMatch(/GPU/i);
+    expect(onIgpu.invalidReason).toMatch(/Intel/);
+
+    // ...and the identical input on the right GPU is valid, which is what makes
+    // the assertion above evidence rather than a coincidence.
+    const onDgpu = assembleReport(input());
+    expect(onDgpu.valid).toBe(true);
+  });
+
+  it("keeps the measurements when the GPU was wrong, but refuses to bless them", () => {
+    // Same rule as an interrupted run: label, never discard. The frames were
+    // really rendered — just not by the GPU the thresholds assume.
+    const report = assembleReport(
+      input({ environment: { ...environment(), gpuRenderer: INTEL_UHD } }),
+    );
+    expect(report.valid).toBe(false);
+    expect(report.routes.find((r) => r.cache === "cold")?.frameTimesMs).toEqual([8, 9, 10]);
+  });
+
+  it("records the screen and power state the run happened under", () => {
+    // A laptop throttles, and battery and mains are different experiments.
+    const report = assembleReport(input());
+    expect(report.environment.screen.width).toBe(1920);
+    expect(report.environment.screen.estimatedRefreshHz).toBeGreaterThan(0);
+    expect(report.environment.power.charging).toBe(true);
+    expect(report.environment.chromeVersion).not.toBe("");
   });
 });
 

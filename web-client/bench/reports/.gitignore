@@ -1,0 +1,4 @@
+# Reports are run artefacts, not source. The directory is tracked so a run has
+# somewhere to write without creating it as a surprise.
+*
+!.gitignore

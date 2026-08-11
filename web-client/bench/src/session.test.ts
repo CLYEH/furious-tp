@@ -48,12 +48,19 @@ const route = (id: string): RouteDefinition => ({
   ],
 });
 
+// The rig's real renderer string: the report is only valid when the run
+// happened on the rig's discrete GPU (see rig.ts), so a placeholder here would
+// make every "valid run" case below fail for an unrelated reason.
 const environment = {
   cpu: "test-cpu",
-  gpuRenderer: "ANGLE (NVIDIA, Test GPU, D3D11)",
+  gpuRenderer:
+    "ANGLE (NVIDIA, NVIDIA GeForce RTX 4060 Laptop GPU (0x000028A0) Direct3D11 vs_5_0 ps_5_0, D3D11)",
   browser: "Chrome 151",
+  chromeVersion: "151.0.7922.76",
   os: "Windows 11",
   viewport: { width: 1920, height: 1080 },
+  screen: { width: 1920, height: 1080, estimatedRefreshHz: 60 },
+  power: { charging: true, batteryLevel: 1, note: "navigator.getBattery()" },
   frameRateLimitDefeated: false,
   measurementNote: "scene.render() CPU cost",
 };

@@ -84,6 +84,27 @@ describe("summariseMemory", () => {
     expect(() => summariseMemory(samples)).toThrow();
   });
 
+  it("records when the cycle ran and what the power state was", () => {
+    // The rig is a laptop: a 15-minute cycle on battery and the same cycle on
+    // mains are different experiments, and only the report can say which one
+    // produced these bytes.
+    const result = summariseMemory([sample(0, 100), sample(900_000, 110)], {
+      startedAt: "2026-08-11T10:00:00.000Z",
+      finishedAt: "2026-08-11T10:15:00.000Z",
+      power: { charging: true, batteryLevel: 1, note: "navigator.getBattery()" },
+    });
+    expect(result.startedAt).toBe("2026-08-11T10:00:00.000Z");
+    expect(result.finishedAt).toBe("2026-08-11T10:15:00.000Z");
+    expect(result.power?.charging).toBe(true);
+  });
+
+  it("says so rather than guessing when the context is unknown", () => {
+    const result = summariseMemory([sample(0, 100), sample(1_000, 110)]);
+    expect(result.startedAt).toBeNull();
+    expect(result.finishedAt).toBeNull();
+    expect(result.power).toBeNull();
+  });
+
   it("rejects samples that are not in chronological order", () => {
     // first/last are taken by position, so an out-of-order series would measure
     // growth backwards without any other symptom.

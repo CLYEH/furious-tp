@@ -83,9 +83,32 @@ const WAYPOINT_KEYS = [
   "rollDegrees",
 ] as const;
 
+/**
+ * Describes a rejected value without stringifying it.
+ *
+ * `String(someObject)` is "[object Object]", which tells the author of a broken
+ * route file nothing, and stringifying arbitrary parsed JSON into an error
+ * message is the same unbounded-echo problem the report avoids elsewhere.
+ */
+function describeValue(value: unknown): string {
+  // Narrowed positively rather than by elimination: TypeScript does not
+  // subtract from `unknown` in the negative branch of a typeof check, so a
+  // trailing `String(value)` would still be `String(unknown)`.
+  if (Array.isArray(value)) return "array";
+  if (value === null) return "null";
+  if (typeof value === "string") return `字串 ${JSON.stringify(value.slice(0, 40))}`;
+  if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") {
+    return String(value);
+  }
+  if (typeof value === "undefined") return "undefined";
+  if (typeof value === "symbol") return value.toString();
+  if (typeof value === "function") return "function";
+  return "object";
+}
+
 function asRecord(value: unknown, what: string): Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw new RouteError(`${what} 必須是物件,收到 ${Array.isArray(value) ? "array" : String(value)}`);
+    throw new RouteError(`${what} 必須是物件,收到 ${describeValue(value)}`);
   }
   return value as Record<string, unknown>;
 }
@@ -118,7 +141,7 @@ function requireNumber(record: Record<string, unknown>, key: string, what: strin
   const value = record[key];
   if (value === undefined) throw new RouteError(`${what} 缺少 ${key}`);
   if (typeof value !== "number" || !Number.isFinite(value)) {
-    throw new RouteError(`${what} 的 ${key} 必須是有限數字,收到 ${String(value)}`);
+    throw new RouteError(`${what} 的 ${key} 必須是有限數字,收到 ${describeValue(value)}`);
   }
   return value;
 }
@@ -164,7 +187,7 @@ export function parseRoute(value: unknown): RouteDefinition {
   const kindValue = record["kind"];
   if (kindValue === undefined) throw new RouteError("route 缺少 kind");
   if (typeof kindValue !== "string" || !(ROUTE_KINDS as readonly string[]).includes(kindValue)) {
-    throw new RouteError(`route 的 kind 不是已知類型:${String(kindValue)}`);
+    throw new RouteError(`route 的 kind 不是已知類型:${describeValue(kindValue)}`);
   }
   const kind = kindValue as RouteKind;
 
