@@ -160,6 +160,17 @@ def _snap(
     if edge is None:
         # Untouched endpoint: hand back the original vertex bit-for-bit rather
         # than a value that merely rounds to it.
+        #
+        # The two arms are not equally load-bearing, and a mutation pass will
+        # keep rediscovering that unless it is written down. `t == 1.0` is
+        # real: `p + 1.0 * (q - p)` is NOT q whenever `q - p` cannot be
+        # represented exactly, and the exam pins it with a witness that lands a
+        # whole metre away. `t == 0.0` is an equivalent mutant for every finite
+        # input — `p + 0.0 * dx == p` and `p + 0.0 * dy == p` hold
+        # unconditionally in IEEE 754, so deleting it cannot change a result.
+        # It stays because it says what the branch is for, and because dropping
+        # half of a symmetric guard invites the reader to wonder which half was
+        # the accident.
         if t == 0.0:
             return p
         if t == 1.0:
@@ -185,6 +196,15 @@ def _finish(
     kept_indices: list[int | None] = []
     for point, index in zip(points, indices):
         if kept_points and kept_points[-1] == point:
+            # The collapse decides an IDENTITY, not just a coordinate. When a
+            # real vertex sits exactly on a min edge, the cut computed for the
+            # previous segment lands on the same point, and the pair arrives
+            # here as (synthetic, real). Keeping the synthetic one would hand a
+            # real OSM node a negative boundary id, which D10 conflation (it
+            # matches on OSM ids) can no longer see and which
+            # `qa.dangling_node_ids` stops considering. So a real index is
+            # promoted over a synthetic one — and only over a synthetic one:
+            # between two real vertices the first wins (README rule 6).
             if kept_indices[-1] is None:
                 kept_indices[-1] = index
             continue
