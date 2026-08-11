@@ -512,6 +512,42 @@ def test_a_new_raster_is_never_published_beside_the_old_record(tmp_path, aligned
     assert list(out.parent.glob("*.tmp")) == []
 
 
+def test_the_published_record_is_never_seen_half_written(tmp_path, aligned_source,
+                                                         source_array, monkeypatch):
+    """Why the record goes through a temp file too, and not only the raster.
+
+    Restoring the previous record on failure repairs the *end* state, so it
+    hides the difference between writing the record to a temp file and writing
+    it straight to its final path — every end-state assertion passes either
+    way. What it cannot repair is the window in between: `open(path, "w")`
+    empties its target the moment it opens, so a reader that looks at the
+    record during a direct write sees an empty or half-written file rather
+    than the record that is still published. The stand-in for that reader is
+    the callback below, fired exactly where a real one would be unlucky.
+    """
+    out = tmp_path / "out" / "dtm.tif"
+    record_path = out.parent / "dtm.source.json"
+    run_dtm_etl(source=aligned_source, out=out, source_overrides=V1_ATTRIBUTION)
+    published_record = record_path.read_bytes()
+
+    v2 = write_raster(tmp_path / "src" / "v2.tif", source_array + 50.0,
+                      west=SOURCE_WEST, north=SOURCE_NORTH)
+    seen = []
+    real_write_text = Path.write_text
+
+    def truncate_then_write(self, data, **kwargs):
+        with open(self, "w", encoding="utf-8"):
+            pass  # what "w" does before a single byte is written
+        seen.append(record_path.read_bytes() if record_path.is_file() else None)
+        return real_write_text(self, data, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", truncate_then_write)
+    run_dtm_etl(source=v2, out=out, source_overrides=V2_ATTRIBUTION)
+
+    assert seen == [published_record]
+    assert json.loads(record_path.read_text(encoding="utf-8"))["source"]["name"] == "ATTEMPTED-v2"
+
+
 def test_a_record_that_cannot_be_put_back_is_named_in_the_error(tmp_path, aligned_source,
                                                                 source_array, monkeypatch):
     """When the guarantee degrades, it degrades out loud.

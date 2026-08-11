@@ -406,6 +406,10 @@ def _restore_record(provenance_path: Path, previous: bytes | None) -> str:
     guarantee silently would leave behind the one artefact this whole module
     is arranged to prevent: a provenance record that reads as normal while
     describing a dataset that was never published.
+
+    Assumes one publisher per output path, as this ETL always has: a second
+    run writing the same `--out` concurrently would have its record undone by
+    the first run's restore.
     """
     try:
         current = provenance_path.read_bytes() if provenance_path.is_file() else None
