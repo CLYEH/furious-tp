@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 
 import pytest
 import requests
@@ -239,6 +240,32 @@ def test_a_download_that_cannot_be_written_leaves_no_part_file(tmp_path, monkeyp
     dest = tmp_path / "dtm.tif"
     dest.write_bytes(b"the-raster-downloaded-last-week")
     with pytest.raises(DtmSourceError, match="(?i)no space"):
+        download_source("https://example.invalid/dtm.tif", dest, timeout=30.0)
+    assert list(tmp_path.glob("*.part")) == []
+    assert dest.read_bytes() == b"the-raster-downloaded-last-week"
+
+
+def test_a_download_whose_final_move_fails_leaves_no_part_file(tmp_path, monkeypatch):
+    """The last step of the download had no witness either.
+
+    Found the same way as the case above and worth recording as such: the
+    mutant that deletes this branch's `_discard` survived, and so did a
+    `raise RuntimeError` planted in the same place — nothing in the suite ever
+    reached the failure path of the move that puts a completed download in
+    place. A rejected rename there (the destination held open by a reader, the
+    usual cause) would otherwise leave a fully downloaded `.part` sitting next
+    to the file it failed to become, gigabytes of it, with the operator told
+    only that the download failed.
+    """
+    monkeypatch.setattr(requests, "get", lambda *a, **k: _FakeResponse((b"abc",)))
+
+    def refuse(src, dst):
+        raise PermissionError(13, "the file is open in another process", str(dst))
+
+    monkeypatch.setattr(os, "replace", refuse)
+    dest = tmp_path / "dtm.tif"
+    dest.write_bytes(b"the-raster-downloaded-last-week")
+    with pytest.raises(DtmSourceError, match="into place"):
         download_source("https://example.invalid/dtm.tif", dest, timeout=30.0)
     assert list(tmp_path.glob("*.part")) == []
     assert dest.read_bytes() == b"the-raster-downloaded-last-week"
