@@ -10,7 +10,7 @@
  * fake can decide exactly when the abort lands.
  */
 
-import type { MemoryResult, MemorySample } from "./memory.ts";
+import type { MemoryContext, MemoryResult, MemorySample } from "./memory.ts";
 import { summariseMemory } from "./memory.ts";
 import type {
   BenchEnvironment,
@@ -35,12 +35,18 @@ export interface MemoryCycleRequest {
   signal: AbortSignal;
 }
 
+export interface MemoryCycleResult {
+  samples: MemorySample[];
+  /** When it ran and on what power — the rig is a laptop, so both matter. */
+  context: MemoryContext;
+}
+
 export interface BenchDriver {
   readEnvironment(): Promise<BenchEnvironment>;
   runRoute(request: RouteRequest): Promise<RouteMeasurement>;
   close(): Promise<void>;
   /** Optional so a test double can omit it; only called when memoryMinutes is set. */
-  runMemoryCycle?(request: MemoryCycleRequest): Promise<MemorySample[]>;
+  runMemoryCycle?(request: MemoryCycleRequest): Promise<MemoryCycleResult>;
 }
 
 export interface BenchProgress {
@@ -65,8 +71,12 @@ const UNKNOWN_ENVIRONMENT: BenchEnvironment = {
   cpu: "",
   gpuRenderer: "",
   browser: "",
+  chromeVersion: "",
+  launchArgs: [],
   os: "",
   viewport: { width: 0, height: 0 },
+  screen: { width: 0, height: 0, estimatedRefreshHz: 0 },
+  power: { charging: null, batteryLevel: null, note: "環境讀取失敗,電源狀態未知" },
   frameRateLimitDefeated: false,
   measurementNote: "",
 };
@@ -166,12 +176,12 @@ export async function runBench(options: RunBenchOptions): Promise<BenchReport> {
           message: `記憶體循環量測 ${options.memoryMinutes} 分鐘`,
         });
         try {
-          const samples = await options.driver.runMemoryCycle({
+          const cycle = await options.driver.runMemoryCycle({
             routes: options.routes,
             minutes: options.memoryMinutes!,
             signal,
           });
-          memory = summariseMemory(samples);
+          memory = summariseMemory(cycle.samples, cycle.context);
           options.onProgress?.({
             phase: "memory-done",
             routeId: null,

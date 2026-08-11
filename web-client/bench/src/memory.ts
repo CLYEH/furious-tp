@@ -13,6 +13,19 @@ export interface MemorySample {
   usedHeapBytes: number;
 }
 
+export interface PowerState {
+  charging: boolean | null;
+  /** 0..1, or null when the browser would not say. */
+  batteryLevel: number | null;
+  note: string;
+}
+
+export interface MemoryContext {
+  startedAt: string;
+  finishedAt: string;
+  power: PowerState | null;
+}
+
 export interface MemoryResult {
   startBytes: number;
   endBytes: number;
@@ -23,12 +36,23 @@ export interface MemoryResult {
   /** Always null — see `gpuNote`. Never 0, which would read as "no growth". */
   gpuBytes: null;
   gpuNote: string;
+  /**
+   * When the cycle ran, and on what power. The rig is a laptop: the same
+   * 15-minute cycle on battery and on mains are different experiments, and
+   * only the report can say which one produced these bytes.
+   */
+  startedAt: string | null;
+  finishedAt: string | null;
+  power: PowerState | null;
 }
 
 const GPU_NOTE =
   "GPU 記憶體未量測:瀏覽器不提供讀取 GPU 記憶體的介面,頁面內無法取得。D6 要求的 GPU 成長量在此為缺口,不是 0。";
 
-export function summariseMemory(samples: readonly MemorySample[]): MemoryResult {
+export function summariseMemory(
+  samples: readonly MemorySample[],
+  context?: MemoryContext,
+): MemoryResult {
   if (samples.length < 2) {
     // One reading cannot show growth, and returning 0 for it would be a
     // fabricated pass on the one metric this function exists to produce.
@@ -68,5 +92,8 @@ export function summariseMemory(samples: readonly MemorySample[]): MemoryResult 
     samples: [...samples],
     gpuBytes: null,
     gpuNote: GPU_NOTE,
+    startedAt: context?.startedAt ?? null,
+    finishedAt: context?.finishedAt ?? null,
+    power: context?.power ?? null,
   };
 }

@@ -72,6 +72,69 @@ export function findHitches(frameTimesMs: readonly number[]): Hitch[] {
   return hitches;
 }
 
+/**
+ * Ratio above which a late-run slowdown is called out as suspected throttling.
+ *
+ * Strictly greater: exactly 1.1 is not yet suspected.
+ */
+export const THROTTLING_DRIFT_RATIO = 1.1;
+
+/** Fraction of the run used as the "early" and "late" windows. */
+const DRIFT_WINDOW_FRACTION = 4;
+
+export interface DriftAnalysis {
+  earlyP50Ms: number;
+  lateP50Ms: number;
+  /** lateP50 / earlyP50. Above 1 means the run got slower as it went on. */
+  driftRatio: number;
+  suspectedThrottling: boolean;
+  /** Frames in each window — a ratio from two frames is noise, from two thousand it is a finding. */
+  windowFrames: number;
+}
+
+/**
+ * Did this run get slower as it went on?
+ *
+ * The reference rig is a laptop on a Balanced power plan, and a 15-minute
+ * memory cycle is long enough for it to thermally throttle. A single p95 over
+ * the whole run averages the cool start together with the hot end and describes
+ * neither, so the rise would disappear into a number that still looks fine.
+ *
+ * Medians of the first and last quarter, not means: throttling shifts the whole
+ * distribution, while one 900 ms stall in the last window would drag a mean
+ * over the threshold and report a thermal event that never happened.
+ *
+ * This is a DIAGNOSTIC. It says "these frames got slower", never "this run
+ * fails" — judging is FTP-49's.
+ */
+export function analyseDrift(frameTimesMs: readonly number[]): DriftAnalysis {
+  assertUsable(frameTimesMs);
+  const windowFrames = Math.floor(frameTimesMs.length / DRIFT_WINDOW_FRACTION);
+  if (windowFrames < 2) {
+    throw new RangeError(
+      `analyseDrift: 序列太短(${frameTimesMs.length} frames),不足以分出前後段`,
+    );
+  }
+
+  const median = (values: readonly number[]): number =>
+    percentileNearestRank([...values].sort((a, b) => a - b), 0.5);
+
+  const earlyP50Ms = median(frameTimesMs.slice(0, windowFrames));
+  const lateP50Ms = median(frameTimesMs.slice(frameTimesMs.length - windowFrames));
+  // A zero-millisecond early median would make the ratio infinite; it can only
+  // happen on a clock too coarse to measure this scene, and reporting "no
+  // drift" is the honest answer there rather than Infinity.
+  const driftRatio = earlyP50Ms === 0 ? 1 : lateP50Ms / earlyP50Ms;
+
+  return {
+    earlyP50Ms,
+    lateP50Ms,
+    driftRatio,
+    suspectedThrottling: driftRatio > THROTTLING_DRIFT_RATIO,
+    windowFrames,
+  };
+}
+
 function assertUsable(frameTimesMs: readonly number[]): void {
   if (frameTimesMs.length === 0) {
     // Loud on purpose. A run that collected nothing would otherwise summarise

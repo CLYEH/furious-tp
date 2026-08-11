@@ -57,6 +57,7 @@ const environment = {
     "ANGLE (NVIDIA, NVIDIA GeForce RTX 4060 Laptop GPU (0x000028A0) Direct3D11 vs_5_0 ps_5_0, D3D11)",
   browser: "Chrome 151",
   chromeVersion: "151.0.7922.76",
+  launchArgs: ["--force-high-performance-gpu"],
   os: "Windows 11",
   viewport: { width: 1920, height: 1080 },
   screen: { width: 1920, height: 1080, estimatedRefreshHz: 60 },

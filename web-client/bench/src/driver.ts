@@ -20,11 +20,16 @@ import { join } from "node:path";
 
 import { type BrowserContext, type Page, chromium } from "@playwright/test";
 
-import type { BenchPageEnvironment, BenchPose } from "../page/main.ts";
+import type { BenchPageEnvironment, BenchPagePower, BenchPose } from "../page/main.ts";
 import type { MemorySample } from "./memory.ts";
 import type { BenchEnvironment, RouteMeasurement } from "./report.ts";
 import { type RouteDefinition, createAutopilot } from "./route.ts";
-import type { BenchDriver, MemoryCycleRequest, RouteRequest } from "./session.ts";
+import type {
+  BenchDriver,
+  MemoryCycleRequest,
+  MemoryCycleResult,
+  RouteRequest,
+} from "./session.ts";
 
 /**
  * Asks Chrome to stop pacing frames to the display.
@@ -35,14 +40,39 @@ import type { BenchDriver, MemoryCycleRequest, RouteRequest } from "./session.ts
  * "vsync disabled" because the flag was passed would be a claim about an
  * intention, not about the run.
  */
-const CHROME_ARGS = [
+const BASE_CHROME_ARGS = [
   "--disable-gpu-vsync",
   "--disable-frame-rate-limit",
-  "--force_high_performance_gpu",
   // Without this `performance.memory` is bucketed to 5 MB; the memory cycle
   // reads through CDP instead, but the page's own fallback should not lie.
   "--enable-precise-memory-info",
 ];
+
+/**
+ * Moving Chrome onto the discrete GPU.
+ *
+ * MEASURED on the reference rig (FTP-47): `chrome.exe` has GpuPreference=0, so
+ * Windows chooses, and Windows chooses the Intel UHD. Without an explicit flag
+ * the whole bench runs on the integrated GPU — and a 16.6 ms budget or D1's
+ * "base overhead > 6 ms, replace the renderer" trigger judged against iGPU
+ * numbers would recommend throwing away the rendering engine over a GPU that
+ * should never have been in the measurement.
+ *
+ * Both spellings are passed: Chromium has carried the underscore form and the
+ * hyphen form at different times, and passing an unknown switch is free.
+ */
+const HIGH_PERFORMANCE_GPU_ARGS = [
+  "--force-high-performance-gpu",
+  "--force_high_performance_gpu",
+];
+
+/**
+ * `"auto"` deliberately omits the flags above so Chrome falls back to Windows'
+ * choice. It exists to be the NEGATIVE CONTROL: on this rig it really does land
+ * on the Intel UHD, so it proves the renderer assertion rejects the failure this
+ * machine actually produces — which a synthetic string cannot.
+ */
+export type GpuPreference = "high-performance" | "auto";
 
 export interface PlaywrightDriverOptions {
   baseUrl: string;
@@ -53,6 +83,7 @@ export interface PlaywrightDriverOptions {
   /** Frames rendered but not recorded at the start of a route. Recorded in the report. */
   warmupFrames: number;
   timeoutMs: number;
+  gpuPreference: GpuPreference;
   onLog?: (message: string) => void;
 }
 
@@ -67,6 +98,11 @@ const MEASUREMENT_NOTE =
 export function createPlaywrightDriver(options: PlaywrightDriverOptions): BenchDriver {
   const profileFor = (routeId: string): string => join(options.profileRoot, routeId);
 
+  const launchArgs = [
+    ...BASE_CHROME_ARGS,
+    ...(options.gpuPreference === "high-performance" ? HIGH_PERFORMANCE_GPU_ARGS : []),
+  ];
+
   async function withPage<T>(
     userDataDir: string,
     body: (page: Page, context: BrowserContext) => Promise<T>,
@@ -76,7 +112,7 @@ export function createPlaywrightDriver(options: PlaywrightDriverOptions): BenchD
       headless: !options.headed,
       viewport: options.viewport,
       deviceScaleFactor: 1,
-      args: CHROME_ARGS,
+      args: launchArgs,
     });
     try {
       const page = context.pages()[0] ?? (await context.newPage());
@@ -101,8 +137,12 @@ export function createPlaywrightDriver(options: PlaywrightDriverOptions): BenchD
       cpu: cpus()[0]?.model ?? "",
       gpuRenderer: page.gpuRenderer,
       browser: page.browser,
+      chromeVersion: page.chromeVersion,
+      launchArgs,
       os: `${osType()} ${release()}`,
       viewport: page.viewport,
+      screen: page.screen,
+      power: page.power,
       frameRateLimitDefeated: page.frameRateLimitDefeated,
       measurementNote: MEASUREMENT_NOTE,
       presentIntervalMedianMs: page.presentIntervalMedianMs,
@@ -158,13 +198,18 @@ export function createPlaywrightDriver(options: PlaywrightDriverOptions): BenchD
       };
     },
 
-    async runMemoryCycle(request: MemoryCycleRequest): Promise<MemorySample[]> {
+    async runMemoryCycle(request: MemoryCycleRequest): Promise<MemoryCycleResult> {
       const totalMs = request.minutes * 60_000;
       const samples: MemorySample[] = [];
+      const startedAt = new Date().toISOString();
+      let power: BenchPagePower | null = null;
 
       await withPage(join(options.profileRoot, "__memory"), async (page, context) => {
         const cdp = await context.newCDPSession(page);
         const started = Date.now();
+        const readPower = (): Promise<BenchPagePower> =>
+          page.evaluate(async () => (await globalThis.__ftpBench!.environment()).power);
+        const powerAtStart = await readPower();
 
         // Read through CDP rather than `performance.memory`: the forced GC D6
         // asks for ("強制 GC 後") is only reachable from the protocol, and a
@@ -191,9 +236,24 @@ export function createPlaywrightDriver(options: PlaywrightDriverOptions): BenchD
           }
         }
         await sample();
+
+        // Read again at the end: a laptop unplugged half way through the cycle
+        // is a different experiment from one that was on mains throughout, and
+        // the growth figure would silently mix the two.
+        const powerAtEnd = await readPower();
+        power =
+          powerAtStart.charging === powerAtEnd.charging
+            ? powerAtStart
+            : {
+                ...powerAtEnd,
+                note: `${powerAtEnd.note};電源狀態在循環中變動(起始 charging=${String(powerAtStart.charging)})`,
+              };
       });
 
-      return samples;
+      return {
+        samples,
+        context: { startedAt, finishedAt: new Date().toISOString(), power },
+      };
     },
 
     close(): Promise<void> {

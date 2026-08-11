@@ -15,9 +15,10 @@
  * deleting it would turn a recoverable 20-minute run into a lost one.
  */
 
-import type { MemoryResult } from "./memory.ts";
+import type { MemoryResult, PowerState } from "./memory.ts";
+import { type RigExpectation, checkRigGpu } from "./rig.ts";
 import type { RouteKind } from "./route.ts";
-import { type SeriesSummary, summariseSeries } from "./stats.ts";
+import { type DriftAnalysis, type SeriesSummary, analyseDrift, summariseSeries } from "./stats.ts";
 
 export const REPORT_SCHEMA_VERSION = 1;
 
@@ -43,6 +44,27 @@ export interface BenchEnvironment {
   measurementNote: string;
   /** Median rAF interval observed on this machine — the evidence for the flag above. */
   presentIntervalMedianMs?: number;
+  chromeVersion: string;
+  /**
+   * The exact browser launch arguments this run used.
+   *
+   * Load-bearing on this rig: Chrome's default GPU preference sends it to the
+   * Intel UHD, and only an explicit high-performance flag moves it to the
+   * RTX 4060. The flag list is therefore part of what produced the numbers,
+   * and a reader must be able to see it rather than trust that it was passed.
+   */
+  launchArgs: string[];
+  screen: {
+    width: number;
+    height: number;
+    /**
+     * Derived from the measured rAF interval, not read from the OS — a page
+     * cannot ask for the refresh rate. Labelled "estimated" for that reason.
+     */
+    estimatedRefreshHz: number;
+  };
+  /** The rig is a laptop, and mains vs battery is a different experiment. */
+  power: PowerState;
 }
 
 export interface RouteMeasurement {
@@ -85,11 +107,21 @@ export interface RouteReport {
   presentIntervalsMs: number[];
   summary: SeriesSummary | null;
   presentSummary: SeriesSummary | null;
+  /** null = the series was too short to measure drift, not "no drift". */
+  drift: DriftAnalysis | null;
 }
 
 export interface BenchReport {
   valid: boolean;
   invalidReason: string | null;
+  /**
+   * Which GPU actually drew these frames, verbatim, at the top level.
+   *
+   * The rig has two. A reader must not have to go looking for this, and a
+   * report whose GPU was not the rig's is invalid — see rig.ts.
+   */
+  gpuRenderer: string;
+  gpuAccepted: boolean;
   schemaVersion: number;
   startedAt: string;
   finishedAt: string;
@@ -109,6 +141,8 @@ export interface AssembleInput {
   failures?: readonly RouteFailure[];
   /** Problems the caller detected that belong to no single route. */
   extraProblems?: readonly string[];
+  /** Defaults to the reference rig; data rather than code so FTP-47 can move it. */
+  rig?: RigExpectation;
 }
 
 /**
@@ -137,6 +171,15 @@ function trySummarise(series: number[]): { summary: SeriesSummary | null; proble
   }
 }
 
+/** Drift needs a beginning and an end; a short series simply has not got one. */
+function tryAnalyseDrift(series: number[]): DriftAnalysis | null {
+  try {
+    return analyseDrift(series);
+  } catch {
+    return null;
+  }
+}
+
 function environmentProblem(environment: BenchEnvironment): string | null {
   // Numbers without provenance are not readable, and FTP-47 has not defined the
   // reference rig — the environment block is currently the ONLY thing that says
@@ -157,6 +200,12 @@ export function assembleReport(input: AssembleInput): BenchReport {
 
   const environmentIssue = environmentProblem(input.environment);
   if (environmentIssue !== null) problems.push(environmentIssue);
+
+  // The rig has two GPUs and the wrong one produces perfectly plausible
+  // numbers. Same treatment as an interrupted run: the data is kept, the
+  // report refuses to bless it.
+  const gpu = checkRigGpu(input.environment.gpuRenderer, input.rig);
+  if (gpu.reason !== null) problems.push(gpu.reason);
 
   for (const problem of input.extraProblems ?? []) problems.push(bounded(problem));
 
@@ -186,6 +235,7 @@ export function assembleReport(input: AssembleInput): BenchReport {
         presentIntervalsMs: [],
         summary: null,
         presentSummary: null,
+        drift: null,
       };
     }
 
@@ -206,6 +256,7 @@ export function assembleReport(input: AssembleInput): BenchReport {
         presentIntervalsMs: [],
         summary: null,
         presentSummary: null,
+        drift: null,
       };
     }
 
@@ -235,13 +286,18 @@ export function assembleReport(input: AssembleInput): BenchReport {
       presentIntervalsMs: measurement.presentIntervalsMs,
       summary: primary.summary,
       presentSummary: present.summary,
+      // null means "the series was too short to ask", never "no drift".
+      drift: tryAnalyseDrift(measurement.frameTimesMs),
     };
   });
 
   return {
-    // First key, deliberately. See the header.
+    // First keys, deliberately. See the header: a reader meets the validity and
+    // the GPU that produced these numbers before it meets a number.
     valid: problems.length === 0,
     invalidReason: problems.length === 0 ? null : problems.join("|"),
+    gpuRenderer: input.environment.gpuRenderer,
+    gpuAccepted: gpu.accepted,
     schemaVersion: REPORT_SCHEMA_VERSION,
     startedAt: input.startedAt,
     finishedAt: input.finishedAt,

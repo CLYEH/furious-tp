@@ -43,6 +43,7 @@ const environment = () => ({
   gpuRenderer: RTX_4060,
   browser: "Chrome 151.0.0.0",
   chromeVersion: "151.0.7922.76",
+  launchArgs: ["--force-high-performance-gpu"],
   os: "Windows 11",
   viewport: { width: 1920, height: 1080 },
   screen: { width: 1920, height: 1080, estimatedRefreshHz: 60 },
@@ -305,6 +306,14 @@ describe("assembleReport — which GPU actually drew this", () => {
     );
     expect(report.valid).toBe(false);
     expect(report.routes.find((r) => r.cache === "cold")?.frameTimesMs).toEqual([8, 9, 10]);
+  });
+
+  it("records the exact launch flags, because they decide which GPU was used", () => {
+    // Measured on this rig: Chrome's default GPU preference lands on the Intel
+    // UHD, and only an explicit high-performance flag moves it to the RTX 4060.
+    // "the flag was passed" must be readable from the artefact, not assumed.
+    const report = assembleReport(input());
+    expect(report.environment.launchArgs).toContain("--force-high-performance-gpu");
   });
 
   it("records the screen and power state the run happened under", () => {

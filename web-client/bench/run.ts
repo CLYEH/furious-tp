@@ -6,10 +6,11 @@
  * about whether the RUN completed, never about performance — an invalid report
  * means "do not read these numbers", not "the scene is too slow".
  *
- * Nor does it know what machine it is on. FTP-47 (`bench/RIG.md`) is still
- * waiting on the owner, so nothing here claims to be the reference rig; the
- * report records the machine it actually ran on and leaves the comparison to
- * whoever defines the rig.
+ * The rig itself is specified by `bench/RIG.md` (FTP-47, owner-ruled), which is
+ * NOT this ticket's file. What this harness does is CHECK it: the rig has two
+ * GPUs, Chrome lands on the wrong one by default, and a report produced on the
+ * Intel UHD is rejected rather than published. `--gpu auto` reproduces that
+ * failure on purpose, as the negative control.
  */
 
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
@@ -18,7 +19,7 @@ import { dirname, join } from "node:path";
 import { parseArgs } from "node:util";
 import { fileURLToPath } from "node:url";
 
-import { createPlaywrightDriver } from "./src/driver.ts";
+import { type GpuPreference, createPlaywrightDriver } from "./src/driver.ts";
 import type { BenchReport, CacheState } from "./src/report.ts";
 import { type RouteDefinition, parseRoute } from "./src/route.ts";
 import { runBench } from "./src/session.ts";
@@ -38,6 +39,10 @@ const { values } = parseArgs({
     out: { type: "string", default: DEFAULT_REPORT_DIR },
     headed: { type: "boolean", default: false },
     label: { type: "string", default: "" },
+    // "auto" is the negative control: it omits the high-performance GPU flags,
+    // and on this rig Windows then puts Chrome on the Intel UHD, which the
+    // report must reject. See driver.ts.
+    gpu: { type: "string", default: "high-performance" },
   },
 });
 
@@ -52,6 +57,11 @@ const cacheStates: CacheState[] =
     : values.cache === "cold" || values.cache === "warm"
       ? [values.cache]
       : fail(`--cache 必須是 cold | warm | both,收到 ${String(values.cache)}`);
+
+const gpuPreference: GpuPreference =
+  values.gpu === "high-performance" || values.gpu === "auto"
+    ? values.gpu
+    : fail(`--gpu 必須是 high-performance | auto,收到 ${String(values.gpu)}`);
 
 const memoryMinutes = Number(values["memory-minutes"]);
 if (!Number.isFinite(memoryMinutes) || memoryMinutes < 0) {
@@ -92,6 +102,7 @@ function summarise(report: BenchReport): string {
   lines.push("");
   lines.push(`  valid: ${report.valid}${report.valid ? "" : ` — ${report.invalidReason ?? ""}`}`);
   lines.push(`  GPU:   ${report.environment.gpuRenderer || "(未知)"}`);
+  lines.push(`  GPU 接受: ${report.gpuAccepted}   flags: ${report.environment.launchArgs.join(" ")}`);
   lines.push(
     `  vsync: frameRateLimitDefeated=${report.environment.frameRateLimitDefeated}` +
       ` (present interval median ${report.environment.presentIntervalMedianMs?.toFixed(2) ?? "?"} ms)`,
@@ -159,6 +170,7 @@ async function main(): Promise<number> {
       viewport,
       warmupFrames,
       timeoutMs: 600_000,
+      gpuPreference,
       onLog: (message) => console.log(message),
     });
 
