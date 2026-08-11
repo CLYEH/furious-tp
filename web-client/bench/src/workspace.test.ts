@@ -26,7 +26,7 @@
 
 import { describe, expect, it } from "vitest";
 
-import { isReclaimable } from "./workspace.ts";
+import { SETUP_GRACE_MS, isReclaimable } from "./workspace.ts";
 
 /** Another process, not this one — the self-owned case is separate below. */
 const OTHER = 4242;
@@ -41,6 +41,25 @@ describe("isReclaimable", () => {
 
   it("reclaims a workspace whose owner is gone", () => {
     const verdict = isReclaimable({ ownerPid: OTHER, isRunning: () => false });
+    expect(verdict.reclaim).toBe(true);
+  });
+
+  it("keeps a just-created directory that has not been locked yet", () => {
+    // The remaining window: mkdtemp creates the directory, and the lock lands a
+    // moment later. A reclaimer arriving in between sees no owner and would
+    // delete a workspace that is mid-setup — the same destructive shape as the
+    // original bug, only narrower.
+    const verdict = isReclaimable({ ownerPid: null, isRunning: () => false, ageMs: 1_000 });
+    expect(verdict.reclaim).toBe(false);
+    expect(verdict.reason).toMatch(/初始化|setup/i);
+  });
+
+  it("reclaims an old unlocked directory once the window has passed", () => {
+    const verdict = isReclaimable({
+      ownerPid: null,
+      isRunning: () => false,
+      ageMs: SETUP_GRACE_MS * 2,
+    });
     expect(verdict.reclaim).toBe(true);
   });
 

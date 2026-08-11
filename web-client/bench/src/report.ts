@@ -39,6 +39,11 @@ export const KNOWN_LIMITATIONS: readonly string[] = [
     "Windows 上 kill 與 child.kill('SIGINT') 都是 TerminateProcess,無法用來驗證。",
   "frameTimesMs 是 widget.render() 的主執行緒耗時,含 tile ingest、不含 GPU 非同步時間;" +
     "本輸出不足以判定 D1 的 6 ms 翻案條件(詳見 bench/README.md)。",
+  "考卷到不了的範圍是 src/driver.ts 與 page/main.ts 兩個完整檔案。page/main.ts 沒有任何 runtime 覆蓋," +
+    "而它握有逐幀計時迴圈(本報告 frameTimesMs 的唯一來源)與 readGpu()(gpuRenderer/gpuAccepted 的唯一來源)。" +
+    "已實測:把 readGpu() 換成寫死字串,全部閘門仍然通過且 gpuAccepted 仍為 true。",
+  "跨 run 的 p95 漂移不可作為回歸基線:同版本四次冷快取的 p95 全距為 80.70 ms(中位數的 21.84%)," +
+    "而報告目前沒有欄位能區分場景、網路與機器熱狀態這三種成因。",
 ];
 
 export type CacheState = "cold" | "warm";

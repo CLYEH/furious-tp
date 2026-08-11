@@ -22,7 +22,21 @@ export interface ReclaimQuestion {
   /** PID from the lock file; null when there is no lock, NaN when unreadable. */
   ownerPid: number | null;
   isRunning: (pid: number) => boolean;
+  /**
+   * How long ago the directory was created, in ms. Optional; when absent an
+   * unlocked directory is treated as old.
+   *
+   * There is an unavoidable window between `mkdtemp` creating the directory and
+   * the lock file landing inside it. A concurrent reclaimer arriving in that
+   * window sees no owner and would delete a workspace that is mid-setup — the
+   * same data-destroying shape as before, just narrower. A directory younger
+   * than the grace period is therefore assumed to be someone's setup.
+   */
+  ageMs?: number;
 }
+
+/** Long enough to cover mkdtemp -> writeFile, short enough not to strand debris. */
+export const SETUP_GRACE_MS = 30_000;
 
 export interface ReclaimVerdict {
   reclaim: boolean;
@@ -33,6 +47,11 @@ export function isReclaimable(question: ReclaimQuestion): ReclaimVerdict {
   const { ownerPid } = question;
 
   if (ownerPid === null) {
+    if (question.ageMs !== undefined && question.ageMs < SETUP_GRACE_MS) {
+      // Created moments ago and not yet locked: almost certainly another run
+      // between mkdtemp and writing its lock.
+      return { reclaim: false, reason: "剛建立且尚未上鎖,可能正在初始化" };
+    }
     return { reclaim: true, reason: "沒有 owner 鎖,無人持有" };
   }
   if (!Number.isInteger(ownerPid) || ownerPid <= 0) {

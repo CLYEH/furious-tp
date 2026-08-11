@@ -19,7 +19,7 @@ npm run bench -- --gpu auto                     # 負向對照(見下)
 
 ### 旗標打錯時,這個 CLI 會拒絕而不是猜
 
-**所有參數都必須是具名旗標;位置參數一律拒絕(`allowPositionals: false`)。**
+**所有參數都必須是具名旗標;位置參數一律拒絕**(靠 `node:util` `parseArgs` 的 `strict` 預設 —— 本 repo 並未顯式設定 `allowPositionals`,行為相同但選項字面不存在,先前的寫法是錯的)。
 
 這條在實務上擋掉的東西很具體:PowerShell 的呼叫運算子會吃掉 `--` 分隔符,`npm run bench -- --routes offroad-south --cache warm --label X` 到 node 手上可能變成 `bench/run.ts offroad-south warm X`。**若 CLI 接受位置參數,那次呼叫會產出一份看起來完全正常、但配置是預設值的報告** —— 路線可能對、快取模式卻不是你要的,而報告上沒有任何地方看得出來。
 
@@ -97,9 +97,13 @@ autopilot 的位姿是 **frameIndex 的純函數**,不吃 wall clock。這是 AC
 
 D6 的七項量測條件裡有「**無其他 GPU 負載**」。**本 harness 擋不到它** —— 它讀 `UNMASKED_RENDERER_WEBGL`,那個字串只說明是哪張卡,**不說明卡上還跑著什麼**。
 
-**這是兩份文件之間沒有人自動負責的一格**,而且不是假想:本票的 r1–r4 就是在 Brave × 2 與 Acrobat 同時佔用同一顆 GPU 的狀態下取得的(利用率在數秒內於 7%–55% 間擺盪)。
+**這是兩份文件之間沒有人自動負責的一格**,而且不是假想:本票的 r1–r4 期間,owner 的 Brave × 2 與 Acrobat 確實**常駐**於同一顆 GPU。
 
-為什麼這一格特別會咬人:**外來 GPU 負載的起伏本身就會造成重跑之間的離散。** 於是「p95 重現不了」會有兩個**無法區分**的解釋 —— NLSC 串流的本質變異,或別的程式在各次 run 之間負載不同。**兩者產生一模一樣的觀測。** 因此「在受污染條件下 AC1 做不到」與「AC1 在這台機器上做不到」是**兩個不同的命題**,前者不能當後者用。
+**但「常駐」就是能講的全部,不要多講一個字。** 實測(60 樣本):**那三個程式閒置、沒有 bench 在跑時,GPU 利用率是平的 0%。** 量測進行中所看到的起伏(40 樣本,0–54%)**是本 harness 自己的 Chrome 在算圖** —— 消費級顯卡的 nvidia-smi **沒有 per-process 利用率**,總利用率在我們自己正在算圖時取樣,**主要來源就是我們自己**。
+
+因此本 harness **不主張、也不允許主張**「重跑之間的離散來自這些程式」。`externalGpuLoad` 記錄的是**有誰在場**,不是它們吃掉多少。
+
+> 這一段本身有前科:同一個主張在 round 1 被撤回(從 PR body 與 `gpuload.ts` 移除),卻換了一個數字活在這份 README 裡,一路出貨,**由 verifier 在 merge 之後才抓到**。現在它被 `src/retractions.test.ts` 當成可執行的不變式守著,而不是靠記得。
 
 報告的 `environment.externalGpuLoad` 因此記錄:量測起訖時的 GPU 利用率,以及**排除 dwm 與本 harness 自己的 chrome 之後**仍佔用該 GPU 的行程清單。
 
@@ -172,6 +176,47 @@ owner 的 Brave × 2 與 Acrobat 常駐於同一顆 GPU。單元測試涵蓋 `fa
 
 **未驗證的是 handler 本身的接線** —— Windows 上 `kill` 與 Node 的 `child.kill("SIGINT")` 都對應 `TerminateProcess`,handler 不會執行、行程 0.1 秒就死,**兩者都無法用來驗證這件事**。需要人真的按 Ctrl-C。
 
+## 這台機器上量到了什麼(交付時的實測結果)
+
+這一節存在的理由很具體:以下數字先前**只活在 PR body 裡**,而 PR body 會被 squash 進 commit message —— **讀這個目錄的人看不到它**。
+
+### AC1a 可重播:**成立**
+
+三條路線的每一幀位姿,在**兩個獨立建構的 autopilot** 之間 bitwise 相同(第二個較晚建構、逆序走訪、中間插入 busy-wait),mismatch 為 0。相機路徑是 `frameIndex` 的純函數,不吃 wall clock。
+
+### AC1b「同版本重跑兩次 p95 差 < 1 ms」:**未達**
+
+`offroad-south`、同一版本、冷快取四次:
+
+| run | p50 | **p95** | p99 | 1% low | hitches |
+| --- | --- | --- | --- | --- | --- |
+| r1 | 116.00 | **351.60** | 671.20 | 1009.50 | 1146 |
+| r2 | 118.30 | **369.50** | 720.40 | 1027.11 | 1154 |
+| r3 | 127.70 | **398.30** | 698.30 | 1074.86 | 1213 |
+| r4 | 127.70 | **432.30** | 728.90 | 1097.26 | 1193 |
+
+**p95 全距 80.70 ms(中位數的 21.84%),六組配對全部未達。** 熱快取三次:349.50 / 386.90 / 397.50,全距 48.00 ms,同樣未達。
+
+**沒有任何限定條件。** 不主張這與其他程式的 GPU 佔用有關(見上一節:那三個程式閒置時利用率為 0)。
+
+**為什麼這條無法在本票判定**:它量的不是 harness,而是「場景 + 網路 + 機器熱狀態」的合成離散,**而 harness 已證明它自己給出的輸入是 bitwise 確定的**(AC1a)。報告目前**沒有任何欄位能區分**那些成因,所以:
+
+> **跨 run 的 p95 漂移,目前不能拿來當 FTP-49 的回歸基線。** 同版本四次之間就已經出現 21.84% 的位移,而「p95 劣化 10% 即 fail」會把它讀成程式碼回歸。
+
+依裁決,AC1b 的重述移交 **FTP-49**(需補的欄位見下方交接段)。
+
+### 記憶體:本專案第一次量到成長
+
+一次完整的 48 分鐘跑(`valid: true`,含 15 分鐘記憶體循環):
+
+```
+126.6 MB → 510.5 MB    +303.21%    歷時 15.3 分鐘
+```
+
+**D6 的門檻是 < 10%。** 判定屬 FTP-49,但數字先記在這裡。**保留:15 分鐘只裝得下 3 個樣本**,以三點推成長率偏薄,FTP-49 應提高取樣密度再下結論。
+
+同一次跑另有一個與本文件既有註記一致的觀察:**warm 的 p95(687.90)比 cold(664.70)慢** —— 與「NLSC 服務禁止快取其 tileset」相符,「熱」並沒有讓場景變快。
+
 ## 三條路線(RFC D6 的 M1 三型)
 
 | 檔案 | id | 型 | 今天量到什麼 |
@@ -194,7 +239,7 @@ owner 的 Brave × 2 與 Acrobat 常駐於同一顆 GPU。單元測試涵蓋 `fa
   "invalidReason": "…",
   "gpuRenderer": "ANGLE (NVIDIA, … RTX 4060 …)",   // 哪顆 GPU 畫的
   "gpuAccepted": true,
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "environment": { /* CPU / GPU / 瀏覽器 / 啟動旗標 / 螢幕 / 電源 / headless */ },
   "routes": [ { "valid": …, "frameTimesMs": [...], "summary": {...}, "drift": {...} } ],
   "memory": { "growthRatio": …, "gpuBytes": null, "power": {...} }
@@ -228,4 +273,19 @@ npm run lint / typecheck / test    # 三者都已涵蓋 bench/
 
 `bench/` 有自己的 `tsconfig.json` 與 `vitest.config.ts`,因為根層的 include 清單不在 FTP-48 的 Scope 內;`package.json` 的三個 script 都會跑到這裡,讓 harness 與其他程式受同一組閘門管。
 
-瀏覽器是唯一無法在考卷裡涵蓋的部分,所以它被隔離在 `src/driver.ts` 後面(`BenchDriver` 介面)。排程、冷熱順序、中斷處理、失敗處理全部在 `src/session.ts`,可以不用 GPU 就完整檢驗 —— AC5 的中斷就是靠**注入式 abort** 確定性地釘住的,不是靠「剛好中斷一次」。
+瀏覽器是唯一無法在考卷裡涵蓋的部分。排程、冷熱順序、中斷處理、失敗處理、**批次規劃**與 **GPU 佔用判讀**都已抽到可檢驗的模組(`session.ts` / `batching.ts` / `gpuload.ts`),可以不用 GPU 就完整檢驗 —— AC5 的中斷是靠**注入式 abort** 確定性釘住的,不是靠「剛好中斷一次」。
+
+### ⚠ 考卷到不了的範圍:**`src/driver.ts` 與 `page/main.ts` 整個檔案**
+
+先前的文件只點名 `driver.ts`,**那個範圍是錯的**。`page/main.ts` **完全沒有 runtime 覆蓋**(`driver.ts` 對它只有 `import type`,執行期會被抹除),而它握著:
+
+| 在 `page/main.ts` 裡 | 為什麼要緊 |
+| --- | --- |
+| 逐幀計時迴圈(`performance.now()` 包住 `widget.render()`) | **AC2 主序列的唯一來源** |
+| `readGpu()` | `gpuRenderer` / `gpuAccepted` 的唯一來源,**rig 閘門與負向對照全靠它** |
+| `measurePresentInterval()` / `frameRateLimitDefeated` | 呈現節奏與「上限是否解除」的判定 |
+| `heapBytes()` | 頁面側記憶體讀數的後備 |
+
+**已實測的後果**:把 `readGpu()` 換成回傳寫死的 RTX 字串、完全不碰 WebGL —— **lint、typecheck、全部測試皆過,`--gpu auto` 仍回報 `gpuAccepted: true`**。負向對照被完全擊敗而沒有任何閘門察覺。
+
+**所以 `gpuAccepted` 與 AC2 主序列的可信度,都懸在同一個沒有任何測試到得了的檔案上。** 這是本 harness 目前最大的單一缺口,**不是** `driver.ts`。
