@@ -65,7 +65,7 @@ const environment = {
   power: { charging: true, batteryLevel: 1, note: "navigator.getBattery()" },
   externalGpuLoad: {
     supported: true,
-    contended: false,
+    foreignProcessesPresent: false,
     utilizationPctAtStart: 3,
     utilizationPctAtEnd: 4,
     foreignProcesses: [],
@@ -79,12 +79,15 @@ interface FakeDriverOptions {
   onCall?: (request: RouteRequest, index: number) => void | Promise<void>;
   frameTimes?: number[];
   gpuRenderer?: string;
+  /** Runs when the memory cycle is entered — the hook the abort cases fire from. */
+  onMemoryCycle?: () => void;
 }
 
 /** Records what it was asked to do, in order, and answers with fixed samples. */
 function fakeDriver(options: FakeDriverOptions = {}) {
   const calls: { routeId: string; cache: CacheState }[] = [];
   let closed = 0;
+  let memoryCycles = 0;
   const driver: BenchDriver = {
     readEnvironment: () =>
       Promise.resolve(
@@ -113,11 +116,23 @@ function fakeDriver(options: FakeDriverOptions = {}) {
       closed += 1;
       return Promise.resolve();
     },
+    runMemoryCycle: () => {
+      memoryCycles += 1;
+      options.onMemoryCycle?.();
+      return Promise.resolve({
+        samples: [
+          { atMs: 0, usedHeapBytes: 1_000 },
+          { atMs: 1_000, usedHeapBytes: 1_100 },
+        ],
+        context: { startedAt: "t0", finishedAt: "t1", power: null },
+      });
+    },
   };
   return {
     driver,
     calls,
     closeCount: () => closed,
+    memoryCycleCount: () => memoryCycles,
   };
 }
 
@@ -336,6 +351,133 @@ describe("runBench — interruption", () => {
     // A headed Chrome that outlives an interrupted bench holds a GPU and keeps
     // rendering; the next run then measures a machine that is already busy.
     expect(fake.closeCount()).toBe(1);
+  });
+});
+
+/**
+ * TERMINAL-POSITION STATES — a whole axis, not a bug.
+ *
+ * The abort test that used to exist here passed with the post-await check
+ * deleted, because the check at the TOP of the next iteration caught it. That
+ * generalises, and generalising it is the point of this block:
+ *
+ *   A state written at the END of a step, whose only reader is the entry check
+ *   of the NEXT step, is unobserved for the LAST step. There is no next entry.
+ *
+ * So every terminal position in the pipeline needs its own case. The pipeline
+ * is:  route x cache (loop)  ->  memory cycle (phase)  ->  assemble report.
+ *
+ *   last iteration of the route loop ... covered in "interruption" above
+ *   the memory cycle, i.e. the last phase ... covered here
+ *   entry to the memory cycle after a failure ... covered here
+ *
+ * The second of those was a REAL surviving hole found in review: an abort
+ * during the 15-minute memory cycle left `interrupted` unset and published
+ * `valid: true` for an interrupted run — the identical AC5 failure that was
+ * fixed for the last route, one phase later. Fixing only the instance would
+ * have left the third one open too.
+ */
+describe("runBench — the last phase, not just the last route", () => {
+  it("runs the memory cycle and reports its result on a clean run", async () => {
+    // The positive control. Without it, "the cycle did not run" would pass
+    // every negative case below.
+    const fake = fakeDriver();
+    const report = await runBench({
+      routes: [route("a")],
+      cacheStates: ["cold"],
+      driver: fake.driver,
+      memoryMinutes: 15,
+    });
+    expect(fake.memoryCycleCount()).toBe(1);
+    expect(report.memory).not.toBeNull();
+    expect(report.memory?.growthRatio).toBeCloseTo(0.1, 10);
+    expect(report.valid).toBe(true);
+  });
+
+  it("marks the report invalid when the abort lands during the memory cycle", async () => {
+    // The hole. Every route has already finished, so the route loop's entry
+    // check will never run again — if the cycle does not check for itself, an
+    // interrupted 15-minute run is published as valid.
+    const controller = new AbortController();
+    const fake = fakeDriver({
+      onMemoryCycle: () => {
+        controller.abort();
+      },
+    });
+    const report = await runBench({
+      routes: [route("a")],
+      cacheStates: ["cold"],
+      driver: fake.driver,
+      signal: controller.signal,
+      memoryMinutes: 15,
+    });
+    expect(report.valid).toBe(false);
+    expect(report.invalidReason).toMatch(/中斷|interrupt/i);
+    // Label, never discard: the samples it did collect stay in the report.
+    expect(report.memory).not.toBeNull();
+  });
+
+  it("does not start the memory cycle when the run was already interrupted", async () => {
+    // A 15-minute cycle after the operator pressed Ctrl-C is fifteen minutes of
+    // work nobody asked for, appended to a run already known to be void.
+    const controller = new AbortController();
+    const fake = fakeDriver({
+      onCall: () => {
+        controller.abort();
+      },
+    });
+    const report = await runBench({
+      routes: [route("a")],
+      cacheStates: ["cold"],
+      driver: fake.driver,
+      signal: controller.signal,
+      memoryMinutes: 15,
+    });
+    expect(fake.memoryCycleCount()).toBe(0);
+    expect(report.valid).toBe(false);
+  });
+
+  it("does not start the memory cycle after a driver failure", async () => {
+    const fake = fakeDriver({
+      onCall: () => {
+        throw new Error("browser died");
+      },
+    });
+    const report = await runBench({
+      routes: [route("a")],
+      cacheStates: ["cold"],
+      driver: fake.driver,
+      memoryMinutes: 15,
+    });
+    expect(fake.memoryCycleCount()).toBe(0);
+    expect(report.valid).toBe(false);
+  });
+
+  it("does not run the cycle when it was not asked for", async () => {
+    const fake = fakeDriver();
+    const report = await runBench({
+      routes: [route("a")],
+      cacheStates: ["cold"],
+      driver: fake.driver,
+    });
+    expect(fake.memoryCycleCount()).toBe(0);
+    expect(report.memory).toBeNull();
+    expect(report.valid).toBe(true);
+  });
+
+  it("says so when the cycle was asked for but the driver cannot do it", async () => {
+    // Silence here would read as "memory was fine", which is the same shape as
+    // summarising an empty series to zero.
+    const fake = fakeDriver();
+    const { runMemoryCycle: _omitted, ...withoutCycle } = fake.driver;
+    const report = await runBench({
+      routes: [route("a")],
+      cacheStates: ["cold"],
+      driver: withoutCycle,
+      memoryMinutes: 15,
+    });
+    expect(report.valid).toBe(false);
+    expect(report.invalidReason).toMatch(/記憶體|memory/i);
   });
 });
 

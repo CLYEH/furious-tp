@@ -6,17 +6,24 @@
  * automatically before: it lived only in RIG.md's manual preflight, and a manual
  * step is not a check.
  *
- * Why it is recorded rather than enforced:
+ * WHAT THIS CAN AND CANNOT SHOW — read this before quoting the field.
  *
- *   Foreign GPU load VARIES BETWEEN RUNS, and run-to-run variance is exactly
- *   what AC1 measures. A "p95 is not reproducible" result taken under contention
- *   is indistinguishable from one caused by the scene — the two produce the same
- *   observation. Only the report can tell them apart, and only if it says which
- *   conditions applied.
+ *   nvidia-smi on a consumer card reports NO per-process utilisation. So this
+ *   records that other processes were RESIDENT on the GPU. It does not show
+ *   that they consumed any of it, and it does not show that they contended
+ *   with the measurement. Total `utilization.gpu` cannot close the gap either:
+ *   sampled while our own browser is rendering, it is dominated by us.
  *
- *   Aborting on contention would discard completed data. The rule here is the
- *   same as for an interrupted run: label, never discard. Deciding whether a
- *   contended batch is usable belongs to the reader and to FTP-49.
+ *   Therefore a report carrying foreign processes does NOT license "the
+ *   run-to-run spread came from contention". It licenses exactly "these
+ *   processes were present, and their effect was not measured". Using the
+ *   stronger sentence to excuse a failing reproducibility result would be the
+ *   mirror image of reporting a fail as a pass — and this ticket did that once
+ *   already, which is why the wording is pinned here.
+ *
+ *   Recorded, never enforced: aborting would discard completed data, and the
+ *   rule is label, never discard. Whether a batch is usable belongs to the
+ *   reader and to FTP-49.
  */
 
 export interface GpuProcess {
@@ -27,8 +34,14 @@ export interface GpuProcess {
 export interface ExternalGpuLoad {
   /** False when the query could not run at all — never confuse that with "clean". */
   supported: boolean;
-  /** True/false when known, null when unmeasurable. */
-  contended: boolean | null;
+  /**
+   * Were any processes other than ours and the compositor resident on this GPU?
+   * null when it could not be queried at all.
+   *
+   * Deliberately NOT called "contended": presence is what is observable, and
+   * consumption is not.
+   */
+  foreignProcessesPresent: boolean | null;
   utilizationPctAtStart: number | null;
   utilizationPctAtEnd: number | null;
   foreignProcesses: GpuProcess[];
@@ -38,7 +51,7 @@ export interface ExternalGpuLoad {
 /** What the environment carries when the query never ran. Not "clean" — "unknown". */
 export const UNMEASURED_GPU_LOAD: ExternalGpuLoad = {
   supported: false,
-  contended: null,
+  foreignProcessesPresent: null,
   utilizationPctAtStart: null,
   utilizationPctAtEnd: null,
   foreignProcesses: [],
@@ -52,6 +65,22 @@ export interface GpuLoadSample {
   computeApps: string | null;
   /** PIDs belonging to this harness's own browser. */
   ourPids: readonly number[];
+  /**
+   * PID to process name, resolved independently of nvidia-smi.
+   *
+   * Load-bearing, not decorative. A non-elevated nvidia-smi prints
+   * "[Insufficient Permissions]" instead of a name, and on this rig the PID
+   * behind that string is dwm. Matching the ignore-list against the PRINTED
+   * name therefore never matched it, so `foreignProcessesPresent` came out true on every
+   * run — including runs where the GPU measured a flat 0%.
+   *
+   * That is the defect RIG.md 2.1 had fixed one commit earlier, reintroduced
+   * here. Its own wording applies: a check no machine state can pass is worse
+   * than no check — and worse still here, because `foreignProcessesPresent` is the sole
+   * evidence for AC1's qualifier, so permanently true means the qualifier can
+   * never be lifted and AC1 can never be adjudicated.
+   */
+  resolvedNames?: Readonly<Record<number, string>>;
 }
 
 /** Process paths come from the OS and land in a file other people open. */
@@ -61,10 +90,18 @@ const boundedName = (name: string): string =>
 
 /**
  * On every Windows machine with a screen, the desktop compositor is on the GPU.
- * Counting it as contention would mark every run contended, and a flag that is
- * always true teaches the reader to ignore it.
+ * Counting it would raise the foreign-process flag on every run, and a flag
+ * that is always true teaches the reader to ignore it.
  */
-const IGNORED_PROCESSES = ["dwm.exe"];
+const IGNORED_PROCESSES = ["dwm"];
+
+/**
+ * Compared without the .exe suffix, because the two sources spell it
+ * differently: nvidia-smi prints "dwm.exe", PowerShell's resolver returns "dwm".
+ * Matching only one spelling is how this check silently stopped matching.
+ */
+const isIgnored = (name: string): boolean =>
+  IGNORED_PROCESSES.includes(name.toLowerCase().replace(/\.exe$/, ""));
 
 function parsePercent(raw: string | null): number | null {
   if (raw === null) return null;
@@ -85,6 +122,22 @@ function parseProcessLine(line: string): GpuProcess | null {
   return { pid, name: boundedName(name === "" ? rest : name) };
 }
 
+/**
+ * Prefer the independently resolved name over whatever nvidia-smi printed.
+ *
+ * Applied to every row rather than only the unnamed ones: identity is a
+ * property of the PID, and the resolver is the more trustworthy source.
+ */
+function identify(
+  process: GpuProcess,
+  resolved: Readonly<Record<number, string>> | undefined,
+): GpuProcess {
+  if (process.pid === null) return process;
+  const name = resolved?.[process.pid];
+  if (name === undefined || name === "") return process;
+  return { pid: process.pid, name: boundedName(name) };
+}
+
 export function summariseGpuLoad(sample: GpuLoadSample): ExternalGpuLoad {
   if (sample.computeApps === null) {
     // No tool, no list — which is NOT the same as an empty list. Reporting
@@ -92,7 +145,7 @@ export function summariseGpuLoad(sample: GpuLoadSample): ExternalGpuLoad {
     // ran, the same failure shape as a zero with no control.
     return {
       supported: false,
-      contended: null,
+      foreignProcessesPresent: null,
       utilizationPctAtStart: parsePercent(sample.utilisationStart),
       utilizationPctAtEnd: parsePercent(sample.utilisationEnd),
       foreignProcesses: [],
@@ -105,20 +158,25 @@ export function summariseGpuLoad(sample: GpuLoadSample): ExternalGpuLoad {
     .split(/\r?\n/)
     .map(parseProcessLine)
     .filter((process): process is GpuProcess => process !== null)
+    // Identify BEFORE filtering. Filtering on whatever nvidia-smi printed is
+    // precisely what let dwm through as "[Insufficient Permissions]".
+    .map((process) => identify(process, sample.resolvedNames))
     .filter((process) => !(process.pid !== null && ours.has(process.pid)))
-    .filter((process) => !IGNORED_PROCESSES.includes(process.name.toLowerCase()));
+    .filter((process) => !isIgnored(process.name));
 
-  const contended = foreignProcesses.length > 0;
+  const foreignProcessesPresent = foreignProcesses.length > 0;
   return {
     supported: true,
-    contended,
+    foreignProcessesPresent,
     utilizationPctAtStart: parsePercent(sample.utilisationStart),
     utilizationPctAtEnd: parsePercent(sample.utilisationEnd),
     foreignProcesses,
-    note: contended
-      ? `量測期間有其他程序共用同一顆 GPU(${foreignProcesses
+    note: foreignProcessesPresent
+      ? `量測期間有其他程序**常駐**於同一顆 GPU(${foreignProcesses
           .map((p) => p.name)
-          .join("、")})。D6 要求「無其他 GPU 負載」,本批數字不滿足該條件,重跑之間的離散無法與場景本身的變異區分。`
-      : "量測期間未偵測到其他程序共用該 GPU(已排除 dwm 與本 harness 自己的瀏覽器)。",
+          .join("、")})。消費級顯卡的 nvidia-smi 不提供 per-process 利用率,` +
+        `因此**它們是否真的造成競用並未被量到** —— 本欄位陳述「有誰在場」,不是「它們吃掉多少」。` +
+        `不得據此主張重跑之間的離散來自競用。`
+      : "量測期間未偵測到其他程序常駐於該 GPU(已以 PID 反查排除 dwm 與本 harness 自己的瀏覽器)。",
   };
 }

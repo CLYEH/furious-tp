@@ -51,7 +51,7 @@ const environment = () => ({
   power: { charging: true, batteryLevel: 1, note: "navigator.getBattery()" },
   externalGpuLoad: {
     supported: true,
-    contended: false,
+    foreignProcessesPresent: false,
     utilizationPctAtStart: 3,
     utilizationPctAtEnd: 4,
     foreignProcesses: [],

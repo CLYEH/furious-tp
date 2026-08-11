@@ -123,6 +123,45 @@ const gpuUtilisationNow = (): string | null =>
   tryRun("nvidia-smi", ["--query-gpu=utilization.gpu", "--format=csv,noheader,nounits"]);
 
 /**
+ * Resolve the PIDs on the GPU to names ourselves, rather than trusting the
+ * names nvidia-smi printed.
+ *
+ * Without elevation it prints "[Insufficient Permissions]" instead of a name,
+ * and on this rig the PID behind that is dwm — so filtering on what it printed
+ * raised the foreign-process flag on every run, including runs where the GPU
+ * measured a flat 0%.
+ * RIG.md 2.1 prescribes exactly this: take the PID, resolve it separately,
+ * then decide.
+ */
+function resolveProcessNames(pids: readonly number[]): Record<number, string> {
+  if (pids.length === 0) return {};
+  const script =
+    `@(${pids.join(",")}) | ForEach-Object { ` +
+    "$p = Get-Process -Id $_ -ErrorAction SilentlyContinue; " +
+    'if ($p) { "$_=$($p.ProcessName)" } }';
+  const out = tryRun("powershell", ["-NoProfile", "-Command", script]);
+  if (out === null) return {};
+  const resolved: Record<number, string> = {};
+  for (const line of out.split(String.fromCharCode(10))) {
+    const [pidText, name] = line.trim().split("=");
+    const pid = Number(pidText);
+    // An unresolvable PID is left ABSENT rather than defaulted to something
+    // harmless: "we could not tell" must stay distinguishable from "it was fine".
+    if (Number.isInteger(pid) && name !== undefined && name !== "") resolved[pid] = name;
+  }
+  return resolved;
+}
+
+/** The PIDs nvidia-smi says are on the GPU, whatever it managed to call them. */
+function gpuProcessPids(computeApps: string | null): number[] {
+  if (computeApps === null) return [];
+  return computeApps
+    .split(String.fromCharCode(10))
+    .map((line) => Number(line.split(",")[0]?.trim()))
+    .filter((pid) => Number.isInteger(pid) && pid > 0);
+}
+
+/**
  * PIDs of the browsers this harness itself started, so they are not counted as
  * foreign load. Found by profile directory, which is unique to this run.
  */
@@ -213,14 +252,16 @@ export function createPlaywrightDriver(options: PlaywrightDriverOptions): BenchD
       return withPage(join(options.profileRoot, "__environment"), async (page) => {
         // Sampled while our own browser is up, so its PIDs can be excluded and
         // whatever remains is genuinely somebody else.
+        const computeApps = tryRun("nvidia-smi", [
+          "--query-compute-apps=pid,process_name",
+          "--format=csv,noheader",
+        ]);
         const load = summariseGpuLoad({
           utilisationStart: gpuUtilisationNow(),
           utilisationEnd: null,
-          computeApps: tryRun("nvidia-smi", [
-            "--query-compute-apps=pid,process_name",
-            "--format=csv,noheader",
-          ]),
+          computeApps,
           ourPids: ourBrowserPids(options.profileRoot),
+          resolvedNames: resolveProcessNames(gpuProcessPids(computeApps)),
         });
         return { ...nodeEnvironment(await readPageEnvironment(page)), externalGpuLoad: load };
       });
