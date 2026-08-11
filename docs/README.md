@@ -18,6 +18,8 @@
   - [spikes/nlsc.md](spikes/nlsc.md) — Spike R1:NLSC 三維國家底圖 3D Tiles 服務可行性與條款查證
   - `spikes/nlsc-probe.mjs` — R1 可重跑量測 script(實驗用,不進正式模組);自我測試 `spikes/nlsc-probe.selftest.mjs`
   - [spikes/spike-r5-licensing.md](spikes/spike-r5-licensing.md) — Spike R5:衍生 tiles 散布授權相容性(ODbL × 政府開放授權)
+  - [spikes/ground-colouring.md](spikes/ground-colouring.md) — 地表著色資料源:土地使用分區 vs OSM landuse vs 正射影像(FTP-69;**裁決交 owner / RFC**)
+  - `spikes/ground-probe.py` — FTP-69 可重跑量測 script(實驗用,不進正式模組);自我測試 `spikes/ground-probe.selftest.py`
 
 ## Repo 根目錄的治理檔
 
