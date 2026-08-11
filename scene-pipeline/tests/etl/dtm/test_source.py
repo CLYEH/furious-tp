@@ -213,6 +213,62 @@ def test_failed_download_leaves_no_partial_file(tmp_path, monkeypatch):
     assert list(tmp_path.glob("*.part")) == []
 
 
+def test_a_download_that_cannot_be_written_leaves_no_part_file(tmp_path, monkeypatch):
+    """The `except OSError` arm of `download_source` had never been executed.
+
+    Every other download-failure case here fails inside `requests`. The branch
+    that handles the *local* write failing had no witness at all — not "no test
+    could tell the difference", but never reached: deleting its `_discard` left
+    the suite green, and so did a `raise RuntimeError` planted in the same
+    place, which is the signature of code the exam never runs.
+
+    It is also the likeliest way this download dies in the field. A nationwide
+    20 m DTM is gigabytes; the disk filling up part-way through is a normal
+    Tuesday, and it must not leave a `.part` behind, nor cost the operator the
+    copy they already had.
+    """
+
+    def full_disk(*a, **k):
+        def chunks():
+            yield b"abc"
+            raise OSError(28, "No space left on device")
+
+        return _FakeResponse(chunks())
+
+    monkeypatch.setattr(requests, "get", full_disk)
+    dest = tmp_path / "dtm.tif"
+    dest.write_bytes(b"the-raster-downloaded-last-week")
+    with pytest.raises(DtmSourceError, match="(?i)no space"):
+        download_source("https://example.invalid/dtm.tif", dest, timeout=30.0)
+    assert list(tmp_path.glob("*.part")) == []
+    assert dest.read_bytes() == b"the-raster-downloaded-last-week"
+
+
+def test_a_timeout_part_way_through_the_body_leaves_no_part_file(tmp_path, monkeypatch):
+    """A read timeout arrives mid-stream, where the existing case cannot see it.
+
+    `test_download_timeout_is_reported_as_a_timeout` raises from `requests.get`
+    itself, so no `.part` was ever created and its `_discard` is unobservable.
+    Real read timeouts arrive while the body is streaming — the connection
+    stalls after some megabytes — and that is the only shape in which this
+    branch has anything to clean up.
+    """
+
+    def stall_mid_body(*a, **k):
+        def chunks():
+            yield b"abc"
+            raise requests.ReadTimeout("the connection stalled")
+
+        return _FakeResponse(chunks())
+
+    monkeypatch.setattr(requests, "get", stall_mid_body)
+    dest = tmp_path / "dtm.tif"
+    with pytest.raises(DtmSourceError, match="(?i)time"):
+        download_source("https://example.invalid/dtm.tif", dest, timeout=30.0)
+    assert not dest.exists()
+    assert list(tmp_path.glob("*.part")) == []
+
+
 def test_a_failed_download_does_not_destroy_the_copy_already_on_disk(tmp_path, monkeypatch):
     """The `.part` hop guards what is already there, not just tidiness.
 

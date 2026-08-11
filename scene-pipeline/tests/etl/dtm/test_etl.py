@@ -13,6 +13,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 import rasterio
+import rasterio.errors
 from pyproj import Transformer
 
 from scene_pipeline.etl.dtm.errors import (
@@ -383,6 +384,59 @@ def replace_failing_at(target):
     return _replace
 
 
+def replace_interrupted_at(target):
+    """`os.replace` that takes a Ctrl-C on one destination, the rest working.
+
+    `KeyboardInterrupt` derives from `BaseException`, so it is the one way to
+    leave this ETL mid-publish without any of its recovery running. Injected
+    here rather than signalled for real because the window being pinned is a
+    few microseconds wide and a real SIGINT cannot be aimed at it.
+    """
+    real = os.replace
+
+    def _replace(src, dst):
+        if Path(dst) == Path(target):
+            raise KeyboardInterrupt()
+        return real(src, dst)
+
+    return _replace
+
+
+def writing_the_raster_raises(exc):
+    """`rasterio.open` whose write-mode dataset fails from `write`.
+
+    Every other publish-failure case in this file injects at `os.replace`, so
+    the raster write — the long step, the one that actually fills the disk, and
+    the only one that can raise `RasterioError` rather than `OSError` — has
+    never been made to fail. The real dataset is opened first on purpose, so
+    the temporary GeoTIFF genuinely exists when the failure arrives and the
+    cleanup path has something to clean up.
+    """
+    real_open = rasterio.open
+
+    class _FailsOnWrite:
+        def __init__(self, dataset):
+            self._dataset = dataset
+
+        def __enter__(self):
+            self._dataset.__enter__()
+            return self
+
+        def __exit__(self, *exc_info):
+            return self._dataset.__exit__(*exc_info)
+
+        def write(self, *args, **kwargs):
+            raise exc
+
+    def _open(*args, **kwargs):
+        dataset = real_open(*args, **kwargs)
+        if "w" in args[1:2] or kwargs.get("mode") == "w":
+            return _FailsOnWrite(dataset)
+        return dataset
+
+    return _open
+
+
 def test_a_failure_while_publishing_leaves_nothing_behind(aligned_source, tmp_path,
                                                           attribution, monkeypatch):
     """The hazard this ETL actually has is not two writers, it is one writer
@@ -578,6 +632,140 @@ def test_a_record_that_cannot_be_put_back_is_named_in_the_error(tmp_path, aligne
     assert str(record_path) in message
     assert "could not be put back" in message
     assert "never published" in message
+
+
+def test_a_record_that_cannot_be_snapshotted_stops_the_publish(tmp_path, aligned_source,
+                                                                source_array, monkeypatch):
+    """The snapshot guard is fail-closed, and nothing was holding it there.
+
+    `_publish` reads the published record before it replaces it, so a failure
+    later can put it back. When that read fails — the same exclusive handle
+    that makes `os.replace` fail on Windows also blocks a read, and that is the
+    scenario this whole mechanism exists for — the run must refuse to publish
+    at all.
+
+    Swallowing the read instead (`previous_record = None`) is the innocent
+    looking alternative, and it turns the restore into a *deleter*: with no
+    snapshot to compare against, `_restore_record` takes its "there was nothing
+    here before" branch and unlinks the very record it could not read, leaving
+    the previously published GeoTIFF with no provenance at all. Orphaning the
+    shipped raster is a worse outcome than refusing to start, so the guard
+    fails closed — and this is what says so.
+    """
+    out = tmp_path / "out" / "dtm.tif"
+    record_path = out.parent / "dtm.source.json"
+    run_dtm_etl(source=aligned_source, out=out, source_overrides=V1_ATTRIBUTION)
+    published_record = record_path.read_bytes()
+    published_raster, _ = read_band(out)
+
+    v2 = write_raster(tmp_path / "src" / "v2.tif", source_array + 50.0,
+                      west=SOURCE_WEST, north=SOURCE_NORTH)
+
+    # Blocked only for the snapshot read: a handle held briefly, which is what
+    # lets the swallowing variant reach the unlink instead of stopping there.
+    real_read_bytes = Path.read_bytes
+    blocked = {record_path}
+
+    def blocked_once(self):
+        if self in blocked:
+            blocked.discard(self)
+            raise PermissionError(13, "the record is open in another process", str(self))
+        return real_read_bytes(self)
+
+    monkeypatch.setattr(Path, "read_bytes", blocked_once)
+    monkeypatch.setattr(os, "replace", replace_failing_at(out))
+    with pytest.raises(DtmOutputError) as excinfo:
+        run_dtm_etl(source=v2, out=out, source_overrides=V2_ATTRIBUTION)
+
+    assert record_path.is_file(), "the published record was deleted by the run that failed"
+    assert real_read_bytes(record_path) == published_record
+    np.testing.assert_array_equal(read_band(out)[0], published_raster)
+    assert list(out.parent.glob("*.tmp")) == []
+    assert "cannot read the source record" in str(excinfo.value)
+
+
+def test_an_interrupt_between_the_two_moves_does_not_falsify_the_record(tmp_path, aligned_source,
+                                                                        source_array, monkeypatch):
+    """Ctrl-C is not an `OSError`, and the atomicity boundary has to know that.
+
+    `KeyboardInterrupt` derives from `BaseException`, so a clause catching
+    `(RasterioError, OSError)` lets it straight through: no cleanup, no
+    restore, no word to anyone. Landing between the two replaces leaves the
+    disk in *exactly* the state a failed publish used to leave it in — the
+    previous GeoTIFF beside a record describing the one that was never
+    published — except that here nothing even tried to undo it.
+
+    This is not the process-death window the README accepts. The process is
+    alive and perfectly able to put the record back; it simply was not asked
+    to. Interrupting is also the one failure an operator causes deliberately,
+    so it is the likeliest of the lot.
+    """
+    out = tmp_path / "out" / "dtm.tif"
+    record_path = out.parent / "dtm.source.json"
+    run_dtm_etl(source=aligned_source, out=out, source_overrides=V1_ATTRIBUTION)
+    published_record = record_path.read_bytes()
+    published_raster, _ = read_band(out)
+
+    v2 = write_raster(tmp_path / "src" / "v2.tif", source_array + 50.0,
+                      west=SOURCE_WEST, north=SOURCE_NORTH)
+    monkeypatch.setattr(os, "replace", replace_interrupted_at(out))
+    with pytest.raises(KeyboardInterrupt):
+        run_dtm_etl(source=v2, out=out, source_overrides=V2_ATTRIBUTION)
+
+    assert record_path.read_bytes() == published_record
+    np.testing.assert_array_equal(read_band(out)[0], published_raster)
+    assert list(out.parent.glob("*.tmp")) == []
+
+
+def test_an_interrupt_while_the_raster_is_being_written_leaves_no_temp(tmp_path, aligned_source,
+                                                                       attribution, monkeypatch):
+    """The same boundary, over the window that is actually wide.
+
+    The gap between the two replaces is microseconds; the raster write is the
+    whole cost of the run — minutes for a nationwide DTM. That is where a
+    Ctrl-C lands in practice, and an uncaught one leaves `dtm.tif.tmp` sitting
+    in the output directory for good: not dangerous the way a falsified record
+    is, but a standing violation of the README's "a failed run leaves no
+    temporary files", every single time.
+    """
+    out = tmp_path / "out" / "dtm.tif"
+
+    monkeypatch.setattr(rasterio, "open", writing_the_raster_raises(KeyboardInterrupt()))
+    with pytest.raises(KeyboardInterrupt):
+        run_dtm_etl(source=aligned_source, out=out, source_overrides=attribution)
+
+    assert not out.exists()
+    assert not (out.parent / "dtm.source.json").exists()
+    assert list(out.parent.glob("*.tmp")) == []
+
+
+def test_a_raster_write_that_fails_is_reported_and_changes_nothing(tmp_path, aligned_source,
+                                                                    source_array, monkeypatch):
+    """The other half of the same `except`, and it had no witness either.
+
+    Every publish-failure case above injects at `os.replace`, so the failure
+    the code most obviously guards against — the write of the GeoTIFF itself —
+    had never been exercised. It matters because rasterio raises
+    `RasterioError`, which is *not* an `OSError`: drop that name from the
+    clause and the entire suite stays green while a genuine write failure
+    escapes as a raw rasterio error, past the cleanup and past the restore.
+    """
+    out = tmp_path / "out" / "dtm.tif"
+    record_path = out.parent / "dtm.source.json"
+    run_dtm_etl(source=aligned_source, out=out, source_overrides=V1_ATTRIBUTION)
+    published_record = record_path.read_bytes()
+    published_raster, _ = read_band(out)
+
+    v2 = write_raster(tmp_path / "src" / "v2.tif", source_array + 50.0,
+                      west=SOURCE_WEST, north=SOURCE_NORTH)
+    failure = rasterio.errors.RasterioError("the driver refused to write the block")
+    monkeypatch.setattr(rasterio, "open", writing_the_raster_raises(failure))
+    with pytest.raises(DtmOutputError, match="refused to write"):
+        run_dtm_etl(source=v2, out=out, source_overrides=V2_ATTRIBUTION)
+
+    assert record_path.read_bytes() == published_record
+    np.testing.assert_array_equal(read_band(out)[0], published_raster)
+    assert list(out.parent.glob("*.tmp")) == []
 
 
 def test_a_failed_republish_leaves_the_previous_output_intact(tmp_path, aligned_source,

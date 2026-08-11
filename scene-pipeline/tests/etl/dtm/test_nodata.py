@@ -192,11 +192,30 @@ def test_nan_in_the_source_is_treated_as_a_void(tmp_path, source_array, run_etl)
 
 
 def test_an_entirely_void_source_is_an_error_not_an_empty_raster(tmp_path, source_array, run_etl):
+    """N4, asserted on the disk — which is the half this test's name promises.
+
+    Raising is the cheap half. The claim in the name is "not an empty raster",
+    and an exception says nothing about that: move the `valid_fraction <= 0`
+    rejection below `_publish` and the run still raises `DtmCoverageError`
+    with the same message, while the output directory now holds a complete
+    175 x 175 all-nodata GeoTIFF beside a record announcing
+    `valid_fraction: 0.0`. The run reports failure and ships the artefact
+    anyway — README N4 exactly inverted, and every assertion still green.
+
+    So the observable is the output directory, not the exception: a rejected
+    run leaves nothing at all for the next stage to pick up.
+    """
     array = np.full_like(source_array, SENTINEL)
     path = write_raster(tmp_path / "src" / "allvoid.tif", array, west=SOURCE_WEST,
                         north=SOURCE_NORTH, nodata=SENTINEL)
+    out = tmp_path / "out" / "dtm.tif"
     with pytest.raises(DtmCoverageError, match="no valid pixels"):
-        run_etl(path)
+        run_etl(path, out=out)
+
+    assert not out.exists()
+    assert not (out.parent / "dtm.source.json").exists()
+    # Nothing whatsoever, so a temp file or a stray record cannot slip through.
+    assert not out.parent.exists() or list(out.parent.iterdir()) == []
 
 
 def test_valid_fraction_is_measured_and_reported(voided_aligned_source, run_etl):
