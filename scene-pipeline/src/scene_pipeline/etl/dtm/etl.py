@@ -349,6 +349,12 @@ def _publish(
     except OSError as exc:
         raise DtmOutputError(f"cannot create output directory {out_path.parent}: {exc}") from exc
 
+    # Both temporaries are named beside their destination, and that placement
+    # is load-bearing rather than tidy: os.replace is only atomic within one
+    # filesystem, so a temporary in the system temp directory could land on
+    # another volume and silently degrade into a copy — reintroducing the
+    # half-written file at the real path that this whole dance exists to
+    # prevent, on exactly the machines where TMPDIR is a different disk.
     tmp_raster = out_path.with_name(out_path.name + ".tmp")
     tmp_record = provenance_path.with_name(provenance_path.name + ".tmp")
     try:
@@ -381,13 +387,39 @@ def _publish(
         os.replace(tmp_record, provenance_path)
         os.replace(tmp_raster, out_path)
     except (rasterio.errors.RasterioError, OSError) as exc:
-        for leftover in (tmp_raster, tmp_record):
-            try:
-                leftover.unlink(missing_ok=True)
-            except OSError:  # pragma: no cover - best effort cleanup
-                pass
-        note = _restore_record(provenance_path, previous_record)
+        note = _abandon(tmp_raster, tmp_record, provenance_path, previous_record)
         raise DtmOutputError(f"cannot write output to {out_path}: {exc}{note}") from exc
+    except BaseException:
+        # Ctrl-C is not an OSError. Without this clause an interrupt walks
+        # straight past the recovery above and leaves the disk in the state it
+        # exists to undo: between the two replaces, the previous record already
+        # overwritten by one describing a raster that was never published; or,
+        # far more likely, part-way through the raster write — minutes long for
+        # a nationwide DTM — with a temporary left behind for good. Neither is
+        # the process-death window the README accepts: the process is alive and
+        # perfectly able to put the record back.
+        #
+        # Re-raised unchanged. This repairs the disk; it does not pretend to
+        # handle the interrupt, and turning it into a DtmOutputError would stop
+        # Ctrl-C from doing the one thing it is for.
+        _abandon(tmp_raster, tmp_record, provenance_path, previous_record)
+        raise
+
+
+def _abandon(
+    tmp_raster: Path, tmp_record: Path, provenance_path: Path, previous_record: bytes | None
+) -> str:
+    """Give up on a publish: drop both temporaries, put the old record back.
+
+    Returns the warning `_restore_record` produced, or "" when the disk is as
+    it was found.
+    """
+    for leftover in (tmp_raster, tmp_record):
+        try:
+            leftover.unlink(missing_ok=True)
+        except OSError:  # pragma: no cover - best effort cleanup
+            pass
+    return _restore_record(provenance_path, previous_record)
 
 
 def _restore_record(provenance_path: Path, previous: bytes | None) -> str:
@@ -407,9 +439,9 @@ def _restore_record(provenance_path: Path, previous: bytes | None) -> str:
     is arranged to prevent: a provenance record that reads as normal while
     describing a dataset that was never published.
 
-    Assumes one publisher per output path, as this ETL always has: a second
-    run writing the same `--out` concurrently would have its record undone by
-    the first run's restore.
+    Assumes one publisher per output path; that is an operating limitation
+    rather than an implementation note, so it is stated for operators in the
+    module README under "發佈與失敗狀態".
     """
     try:
         current = provenance_path.read_bytes() if provenance_path.is_file() else None
