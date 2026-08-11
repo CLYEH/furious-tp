@@ -9,3 +9,5 @@ if [ -n "$changed" ] && ! printf '%s\n' "$changed" | grep -qvE '(^docs/|\.md$)';
 else
   echo false
 fi
+
+# FTP-62 probe: temporary no-op comment to measure CODEOWNERS review requirement. Do not merge.
