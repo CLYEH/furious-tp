@@ -172,11 +172,13 @@ export function createPlaywrightDriver(options: PlaywrightDriverOptions): BenchD
         await rm(userDataDir, { recursive: true, force: true });
       }
 
-      const poses = posesFor(request.route);
+      const autopilot = createAutopilot(request.route);
+      const poses: BenchPose[] = [];
+      for (let i = 0; i < autopilot.frameCount; i++) poses.push(autopilot.poseAt(i));
       const startedAt = new Date().toISOString();
       options.onLog?.(
         `  ${request.route.id}(${request.cache}):${poses.length} frames、` +
-          `${(createAutopilot(request.route).speedMps).toFixed(1)} m/s`,
+          `${autopilot.speedMps.toFixed(1)} m/s`,
       );
 
       const result = await withPage(userDataDir, (page) =>

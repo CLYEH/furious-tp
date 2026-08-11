@@ -188,9 +188,9 @@ function tryAnalyseDrift(series: number[]): DriftAnalysis | null {
 }
 
 function environmentProblem(environment: BenchEnvironment): string | null {
-  // Numbers without provenance are not readable, and FTP-47 has not defined the
-  // reference rig — the environment block is currently the ONLY thing that says
-  // what these figures are figures of.
+  // Numbers without provenance are not readable. The rig is specified in
+  // bench/RIG.md (FTP-47); this block is what says the run actually happened
+  // on it.
   const missing: string[] = [];
   if (environment.gpuRenderer === "") missing.push("gpuRenderer");
   if (environment.browser === "") missing.push("browser");

@@ -184,15 +184,33 @@ async function main(): Promise<number> {
     });
   } finally {
     await site.close();
-    await rm(workspace, { recursive: true, force: true });
   }
 
+  // The report is written BEFORE the workspace is cleaned up.
+  //
+  // It used to be the other way round, and a real run was lost to it: Windows
+  // still held a lock on Chrome's `first_party_sets.db` a moment after the
+  // context closed, `rm` threw EBUSY from the finally block, and a completed
+  // twenty-minute measurement went in the bin with nothing written. Tidying up
+  // is never allowed to destroy the result it was tidying up after.
   const outDir = values.out ?? DEFAULT_REPORT_DIR;
   await mkdir(outDir, { recursive: true });
   const stamp = report.startedAt.replace(/[:.]/g, "-");
-  const label = values.label === "" ? "" : `-${values.label}`;
+  // The label reaches a filename, so it may not reach out of the directory.
+  const label = values.label === "" ? "" : `-${values.label.replace(/[^\w.-]+/g, "_")}`;
   const file = join(outDir, `bench-${stamp}${label}.json`);
   await writeFile(file, `${JSON.stringify(report, null, 2)}\n`, "utf8");
+
+  // Best effort, and loud when it fails: a leftover temp profile costs disk,
+  // losing the report costs the run.
+  await rm(workspace, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }).catch(
+    (cause: unknown) => {
+      console.log(
+        `bench: 暫存目錄未能清除(${cause instanceof Error ? cause.message : String(cause)}),` +
+          `報告已寫出,可手動刪除 ${workspace}`,
+      );
+    },
+  );
 
   console.log(summarise(report));
   console.log(`\nbench: 報告 ${file}`);
@@ -200,8 +218,8 @@ async function main(): Promise<number> {
     console.log("bench: 這份報告標記為 invalid — 數字不可用於判定。");
   }
   console.log(
-    "bench: 判定門檻與基線回歸屬 FTP-49;reference rig 規格屬 FTP-47(尚未提供)," +
-      "本報告僅陳述「這台機器上的」量測值。",
+    "bench: 判定門檻與基線回歸屬 FTP-49;rig 規格見 bench/RIG.md(FTP-47)。" +
+      "本報告陳述量測值,不做判定。",
   );
 
   // Completion, not performance. See the header.
