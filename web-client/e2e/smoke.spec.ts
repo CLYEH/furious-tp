@@ -27,13 +27,14 @@ test("the scene comes up whether or not NLSC answers", async ({ page }) => {
   const probe = await readSceneProbe(page);
   expect(probe.error).toBeNull();
 
-  // And the operator is told which path they are on, in words.
+  // The operator is told something, whichever path this run took.
+  //
+  // Deliberately NOT branching on `probe.tilesetLoaded` any more. This was an
+  // if/else asserting the healthy wording in one arm and the degraded wording
+  // in the other — so the degraded arm ran only when the live service happened
+  // to be broken, which is a test that reads like coverage and is not. Each
+  // path now has a spec that reaches it on every run: nlsc-buildings.spec.ts
+  // for the healthy one, nlsc-degraded.spec.ts for the degraded one.
   const status = await page.locator("#scene-status").textContent();
   expect(status?.trim().length ?? 0).toBeGreaterThan(0);
-  if (probe.tilesetLoaded) {
-    expect(status).toContain("NLSC 建物已載入");
-  } else {
-    expect(status).toContain("降級模式");
-    expect(probe.warnings.join(" ")).toContain("NLSC");
-  }
 });

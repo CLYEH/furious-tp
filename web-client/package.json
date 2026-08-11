@@ -9,7 +9,7 @@
   "scripts": {
     "build": "vite build",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "lint": "eslint src",
+    "lint": "eslint src e2e",
     "test": "vitest run",
     "e2e": "playwright test",
     "serve:site": "node scripts/serve-site.mjs"

@@ -8,6 +8,7 @@ import {
   checkTilesetFingerprint,
   describeAlert,
   emptyRecord,
+  isWellFormedRecord,
   localStorageWatchStore,
   memoryWatchStore,
   readTilesetSample,
@@ -182,7 +183,7 @@ describe("readTilesetSample", () => {
   // opening the request, and was reported as a corrupt document. Calling our
   // own clock a service defect is the kind of false alarm that makes the whole
   // alert channel worthless.
-  it("reports an abort during the body read as a timeout, not as corruption", async () => {
+  it("reports an abort during the body read as transport, not as corruption", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue({
       ok: true,
       status: 200,
@@ -190,7 +191,53 @@ describe("readTilesetSample", () => {
     } as unknown as Response);
     const sample = await readTilesetSample(URL_UNDER_TEST, fetchImpl, 25);
     expect(sample).toMatchObject({ ok: false, reason: "transport" });
+    expect(sample.ok === false && sample.detail).toContain("中止");
+  });
+
+  // An abort that is not the clock must not be dressed up as one. The merged
+  // version printed "連線逾時(25 ms)" here, and that number was invented.
+  it("does not invent a deadline for an abort that was not a timeout", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: () => Promise.reject(new Error("The user aborted a request.")),
+    } as unknown as Response);
+    const sample = await readTilesetSample(URL_UNDER_TEST, fetchImpl, 25);
+    expect(sample.ok === false && sample.detail).not.toContain("25 ms");
+    expect(sample.ok === false && sample.detail).not.toContain("逾時");
+  });
+
+  it("does quote the deadline when the clock really was the cause", async () => {
+    const timeout = new DOMException("timed out", "TimeoutError");
+    const fetchImpl = vi.fn<typeof fetch>().mockRejectedValue(timeout);
+    const sample = await readTilesetSample(URL_UNDER_TEST, fetchImpl, 25);
+    expect(sample).toMatchObject({ ok: false, reason: "transport" });
     expect(sample.ok === false && sample.detail).toContain("逾時");
+    expect(sample.ok === false && sample.detail).toContain("25 ms");
+  });
+
+  // FTP-5 §3.5: the defective endpoints return SERVER PROCESS MEMORY, and this
+  // detail is rendered into the page. V8's JSON parse message quotes the first
+  // ~10 characters of its input, so the parser message may never be used.
+  it("never renders upstream body content into the failure detail", async () => {
+    const leak = 'SECRET-abc-this-came-from-server-memory';
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse(leak));
+    const sample = await readTilesetSample(URL_UNDER_TEST, fetchImpl);
+    expect(sample).toMatchObject({ ok: false, reason: "unparseable" });
+    const detail = sample.ok === false ? sample.detail : "";
+    expect(detail).not.toContain("SECRET");
+    // A control: the case would pass trivially if the body were never a
+    // substring of anything, so prove the leak is what a naive detail carries.
+    let parserMessage = "";
+    try {
+      JSON.parse(leak);
+    } catch (e) {
+      parserMessage = e instanceof Error ? e.message : "";
+    }
+    expect(parserMessage).toContain("SECRET");
+    // What it says instead: a category and a count, per FTP-5 §7.
+    expect(detail).toContain("不是合法 JSON");
+    expect(detail).toContain(String(leak.length));
   });
 
   it("accepts a tileset with no id rather than failing", async () => {
@@ -441,7 +488,7 @@ describe("recordSample — the record cannot grow without bound", () => {
 
 describe("describeAlert", () => {
   it.each([
-    [{ kind: "revision", url: URL_UNDER_TEST, from: HASH_A, to: HASH_B }, "改版"],
+    [{ kind: "revision", url: URL_UNDER_TEST, from: HASH_A, to: HASH_B }, "連續 3 次載入"],
     [{ kind: "source-divergence", url: URL_UNDER_TEST, hashes: [HASH_A, HASH_B] }, "來源分歧"],
     [
       { kind: "service-defect", url: URL_UNDER_TEST, reason: "unparseable", detail: "x" },
@@ -451,6 +498,21 @@ describe("describeAlert", () => {
     [{ kind: "watch-degraded", url: URL_UNDER_TEST, detail: "x" }, "無法保存"],
   ] as [TilesetAlert, string][])("describes %o to the operator", (alert, phrase) => {
     expect(describeAlert(alert)).toContain(phrase);
+  });
+
+  // §5.3 reserves "改版確認" for three consecutive DAILY polls. Here a poll is a
+  // page load, so the message must describe what was actually observed and say
+  // that the daily confirmation has not happened. Claiming more than was
+  // measured is exactly how an alert channel stops being believed.
+  it("does not claim a confirmation it has not earned", () => {
+    const text = describeAlert({
+      kind: "revision",
+      url: URL_UNDER_TEST,
+      from: HASH_A,
+      to: HASH_B,
+    });
+    expect(text).toContain("連續 3 次載入");
+    expect(text).toContain("尚未經每日輪詢確認");
   });
 
   it("puts the short fingerprint in the revision message", () => {
@@ -600,6 +662,105 @@ function fakeStorage(backing: Map<string, string>): Storage {
     },
   };
 }
+
+// B2. A stored record is data written by an older build, sitting in a browser
+// nobody controls. Before this, a record that was valid JSON but the wrong
+// SHAPE threw inside recordSample — past both try/catch guards — so the check
+// rejected, emitted nothing, and left the bad record in place. boot.ts fired it
+// with `void`, so it became an unhandled rejection: D5 died silently on that
+// machine and repeated the death on every later load.
+//
+// The realistic trigger is not an attacker. Add one field to TilesetWatchRecord
+// and every record already in the wild is the wrong shape.
+describe("a stored record that is JSON but not a record", () => {
+  const KEY = "ftp:nlsc-tileset-watch:" + URL_UNDER_TEST;
+
+  const poisoned = async (stored: string) => {
+    const backing = new Map<string, string>([[KEY, stored]]);
+    const store = localStorageWatchStore(fakeStorage(backing));
+    const alerts: TilesetAlert[] = [];
+    const result = await checkTilesetFingerprint({
+      url: URL_UNDER_TEST,
+      fetchImpl: vi.fn<typeof fetch>().mockResolvedValue(jsonResponse(TILESET_A)),
+      store,
+      emit: (a) => void alerts.push(a),
+    });
+    return { alerts, result, backing };
+  };
+
+  const shapes: [string, string][] = [
+    ["an empty object", "{}"],
+    ["a record with no observations", JSON.stringify({ url: URL_UNDER_TEST, recent: [] })],
+    ["observations that are not an array", JSON.stringify({ url: URL_UNDER_TEST, observations: {}, recent: [] })],
+    ["an observation that is not an object", JSON.stringify({ url: URL_UNDER_TEST, observations: [null], recent: [] })],
+    ["an observation missing its count", JSON.stringify({ url: URL_UNDER_TEST, observations: [{ hash: "a", firstSeenAt: "t", lastSeenAt: "t" }], recent: [] })],
+    ["recent holding a non-string", JSON.stringify({ url: URL_UNDER_TEST, observations: [], recent: [1] })],
+    ["a JSON array", "[]"],
+    ["a JSON string", '"nope"'],
+  ];
+
+  it.each(shapes)("survives %s rather than rejecting", async (_name, stored) => {
+    await expect(poisoned(stored)).resolves.toBeDefined();
+  });
+
+  it.each(shapes)("tells the operator about %s", async (_name, stored) => {
+    const { alerts } = await poisoned(stored);
+    expect(alerts.map((a) => a.kind)).toContain("watch-degraded");
+  });
+
+  it.each(shapes)("rebuilds a usable record after %s", async (_name, stored) => {
+    const { result, backing } = await poisoned(stored);
+    expect(result.record.establishedHash).toBe(HASH_A);
+    // And the poison is gone, so the next load is not the same death again.
+    expect(isWellFormedRecord(JSON.parse(backing.get(KEY) as string))).toBe(true);
+  });
+
+  // Stored `null` is the one shape that is NOT a degradation: it parses to the
+  // same value `load` returns for "nothing stored", so it is indistinguishable
+  // from a first visit, and a clean restart is the right answer. Kept as its
+  // own case rather than bent into the table, because the difference is real.
+  it("treats stored null as a first visit, with no alert", async () => {
+    const { alerts, result } = await poisoned("null");
+    expect(alerts.map((a) => a.kind)).not.toContain("watch-degraded");
+    expect(result.record.establishedHash).toBe(HASH_A);
+  });
+
+  // Control. A validator that rejected everything would pass every case above
+  // while quietly throwing away good records on every single load.
+  it("leaves a well-formed record alone", async () => {
+    const good = feed(emptyRecord(URL_UNDER_TEST), [HASH_B, HASH_B]).record;
+    const backing = new Map<string, string>([[KEY, JSON.stringify(good)]]);
+    const alerts: TilesetAlert[] = [];
+    const { record } = await checkTilesetFingerprint({
+      url: URL_UNDER_TEST,
+      fetchImpl: vi.fn<typeof fetch>().mockResolvedValue(jsonResponse(TILESET_B)),
+      store: localStorageWatchStore(fakeStorage(backing)),
+      emit: (a) => void alerts.push(a),
+    });
+    expect(alerts.map((a) => a.kind)).not.toContain("watch-degraded");
+    expect(record.establishedHash).toBe(HASH_B);
+    expect(record.observations[0]?.count).toBe(3);
+  });
+});
+
+describe("isWellFormedRecord", () => {
+  it("accepts a record this module produced", () => {
+    expect(isWellFormedRecord(emptyRecord(URL_UNDER_TEST))).toBe(true);
+    expect(isWellFormedRecord(feed(emptyRecord(URL_UNDER_TEST), [HASH_A]).record)).toBe(true);
+  });
+
+  it.each([
+    ["null", null],
+    ["a string", "x"],
+    ["a number", 1],
+    ["an array", []],
+    ["an object with no url", { observations: [], recent: [] }],
+    ["a url that is not a string", { url: 1, observations: [], recent: [], establishedHash: null, establishedTilesetId: null }],
+    ["establishedHash of the wrong type", { url: "u", observations: [], recent: [], establishedHash: 7, establishedTilesetId: null }],
+  ])("rejects %s", (_name, value) => {
+    expect(isWellFormedRecord(value)).toBe(false);
+  });
+});
 
 describe("localStorageWatchStore", () => {
   it("round-trips a record", () => {

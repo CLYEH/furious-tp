@@ -11,13 +11,23 @@
  *  - **It never answers.** A rejection is easy to remember; silence is the one
  *    that leaves the scene reporting nothing forever, so the wait is bounded.
  *  - **It answers wrongly, but not always.** FTP-5 §0.1/§5.3(5) recorded one
- *    URL returning more than one body, and on 2026-08-11 this endpoint was
- *    measured serving a decodable tileset on 4 requests out of 20. A single
- *    attempt against a source like that is not "loading", it is a coin toss,
- *    so a small bounded number of attempts is made before giving up.
+ *    URL returning more than one body. On **2026-08-11**, during a service
+ *    incident, this endpoint served a decodable tileset on **4 requests out of
+ *    20**; later the same day it measured **13/13 decodable**, and the reviewer
+ *    independently measured 13/13 too. So the 20% figure describes a past
+ *    incident, **not** the steady state — the reason to retry is that this
+ *    source is known to answer inconsistently at all, not that it is 20%.
  *
- * The retry budget is deliberately small. FTP-5 R7 — do not lean on a public
- * government service — outranks squeezing the success rate higher.
+ * On the number 3 specifically: it is **supported by measurement but not
+ * derived from it**. What the measurements support is "retry"; at p=0.2 three
+ * attempts only move 20% to 49%, which is still a coin toss. What actually caps
+ * it is FTP-5 R7 — do not lean on a public government service — which outranks
+ * squeezing the success rate higher.
+ *
+ * Known tension with R7 (nit, not fixed here): an abandoned attempt is dropped,
+ * not cancelled, so in the worst case three ~3 MB requests are in flight at
+ * once. Cancelling needs the loader to accept an AbortSignal, which
+ * `Cesium3DTileset.fromUrl` does not expose.
  */
 
 /** How long one attempt gets before it is abandoned. */
@@ -26,6 +36,8 @@ export const TILESET_LOAD_TIMEOUT_MS = 20_000;
 export const TILESET_LOAD_ATTEMPTS = 3;
 /** Pause between attempts. */
 export const TILESET_RETRY_DELAY_MS = 1_500;
+
+import { messageOf } from "../errors.js";
 
 export interface TilesetLoadDeps<T> {
   /** Loads the tileset — `Cesium3DTileset.fromUrl` in the real scene. */
@@ -39,15 +51,6 @@ export interface TilesetLoadOptions {
   retryDelayMs?: number;
   /** Injected so tests do not have to spend real seconds proving they waited. */
   sleep?: (ms: number) => Promise<void>;
-}
-
-function messageOf(cause: unknown): string {
-  if (cause instanceof Error && cause.message.length > 0) return cause.message;
-  if (typeof cause === "string" && cause.length > 0) return cause;
-  if (typeof cause === "number" || typeof cause === "boolean") return String(cause);
-  // Anything else — null, a bare object, an error carrying no message —
-  // stringifies to something the operator cannot act on, so say that instead.
-  return "沒有錯誤訊息";
 }
 
 type Attempt<T> = { kind: "loaded"; value: T } | { kind: "failed"; reason: string };

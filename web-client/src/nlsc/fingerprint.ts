@@ -19,6 +19,7 @@
  */
 
 import { NLSC_FETCH_INIT } from "../config/nlsc.js";
+import { messageOf } from "../errors.js";
 
 /** Consecutive polls a new digest must hold alone before it counts as a revision. */
 export const CONFIRMATION_POLLS = 3;
@@ -78,13 +79,6 @@ export async function sha256Hex(text: string): Promise<string> {
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-function messageOf(cause: unknown): string {
-  if (cause instanceof Error && cause.message.length > 0) return cause.message;
-  if (typeof cause === "string" && cause.length > 0) return cause;
-  if (typeof cause === "number" || typeof cause === "boolean") return String(cause);
-  return "沒有錯誤訊息";
-}
-
 /**
  * Fetch the tileset and reduce it to a fingerprint, or to a named failure.
  *
@@ -102,10 +96,21 @@ export async function readTilesetSample(
   // and the second one used to be reported as a corrupt document. Saying "the
   // service is broken" when it was our own clock is a false defect report, and
   // D5's value is that its alerts can be believed.
-  const aborted = (cause: unknown): boolean =>
-    (cause instanceof DOMException &&
-      (cause.name === "TimeoutError" || cause.name === "AbortError")) ||
-    (cause instanceof Error && /abort/i.test(cause.message));
+  //
+  // Timeout and abort are told apart rather than merged: only a real timeout
+  // gets to quote the deadline. The merged version printed "連線逾時(60000 ms)"
+  // for any error whose message happened to contain "abort", and that number
+  // was fiction whenever the abort was not the clock.
+  const abortKind = (cause: unknown): "timeout" | "aborted" | null => {
+    if (cause instanceof DOMException) {
+      if (cause.name === "TimeoutError") return "timeout";
+      if (cause.name === "AbortError") return "aborted";
+    }
+    if (cause instanceof Error && /abort/i.test(cause.message)) return "aborted";
+    return null;
+  };
+  const abortDetail = (kind: "timeout" | "aborted", cause: unknown): string =>
+    kind === "timeout" ? `連線逾時(${timeoutMs} ms)` : `請求被中止:${messageOf(cause)}`;
 
   let response: Response;
   try {
@@ -114,10 +119,11 @@ export async function readTilesetSample(
       signal: AbortSignal.timeout(timeoutMs),
     });
   } catch (cause) {
+    const kind = abortKind(cause);
     return {
       ok: false,
       reason: "transport",
-      detail: aborted(cause) ? `連線逾時(${timeoutMs} ms):${messageOf(cause)}` : messageOf(cause),
+      detail: kind === null ? messageOf(cause) : abortDetail(kind, cause),
     };
   }
 
@@ -129,12 +135,9 @@ export async function readTilesetSample(
   try {
     text = await response.text();
   } catch (cause) {
-    if (aborted(cause)) {
-      return {
-        ok: false,
-        reason: "transport",
-        detail: `連線逾時(${timeoutMs} ms):${messageOf(cause)}`,
-      };
+    const kind = abortKind(cause);
+    if (kind !== null) {
+      return { ok: false, reason: "transport", detail: abortDetail(kind, cause) };
     }
     // Where the live corruption lands in a browser: the response claims
     // content-encoding gzip and the body does not decode, which fails here
@@ -145,8 +148,17 @@ export async function readTilesetSample(
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);
-  } catch (cause) {
-    return { ok: false, reason: "unparseable", detail: messageOf(cause) };
+  } catch {
+    // Deliberately NOT the parser's message. V8 quotes the first ~10 characters
+    // of the input back at you, and this detail is rendered into the page — so
+    // a defective endpoint returning server process memory (FTP-5 §3.5) would
+    // have it displayed. §7 pinned the probe to "never emit body content, only
+    // a category and a count"; the same rule applies here.
+    return {
+      ok: false,
+      reason: "unparseable",
+      detail: `回應不是合法 JSON(${text.length} 字元)`,
+    };
   }
 
   const tilesetId =
@@ -261,7 +273,11 @@ const short = (hash: string): string => hash.slice(0, 12);
 export function describeAlert(alert: TilesetAlert): string {
   switch (alert.kind) {
     case "revision":
-      return `NLSC tileset 改版:指紋 ${short(alert.from)} → ${short(alert.to)}(${alert.url})`;
+      // "連續 ${CONFIRMATION_POLLS} 次載入", not "確認改版": §5.3 reserves the
+      // latter for three consecutive DAILY polls, and a poll here is a page
+      // load. Saying more than was measured is how an alert stops being worth
+      // believing.
+      return `NLSC tileset 指紋連續 ${CONFIRMATION_POLLS} 次載入為新值:${short(alert.from)} → ${short(alert.to)}(尚未經每日輪詢確認)(${alert.url})`;
     case "source-divergence":
       return `NLSC tileset 來源分歧:同一 URL 回傳多份內容 ${alert.hashes
         .map(short)
@@ -278,6 +294,44 @@ export function describeAlert(alert: TilesetAlert): string {
 export interface TilesetWatchStore {
   load(url: string): TilesetWatchRecord | null;
   save(record: TilesetWatchRecord): void;
+}
+
+/**
+ * Is this actually a record, or merely something that parsed as JSON?
+ *
+ * A stored record is data written by an earlier version of this program, living
+ * in a browser nobody controls. `JSON.parse(...) as TilesetWatchRecord` is a
+ * claim, not a check — and when the claim was wrong the whole check threw
+ * before reaching either try/catch, emitted nothing, and left the bad record in
+ * place, so every later load of that browser repeated it. Silent AND permanent:
+ * the worst of the three storage failures this module can suffer, and the only
+ * one that was not handled.
+ *
+ * The likely trigger is not an attacker, it is evolution — add one field to
+ * TilesetWatchRecord and every record already in the wild has the wrong shape.
+ * That is why the entries are checked too, not just the top level.
+ */
+export function isWellFormedRecord(value: unknown): value is TilesetWatchRecord {
+  if (typeof value !== "object" || value === null) return false;
+  const record = value as Partial<TilesetWatchRecord>;
+  const nullableString = (v: unknown): boolean => v === null || typeof v === "string";
+  return (
+    typeof record.url === "string" &&
+    nullableString(record.establishedHash) &&
+    nullableString(record.establishedTilesetId) &&
+    Array.isArray(record.recent) &&
+    record.recent.every((hash) => typeof hash === "string") &&
+    Array.isArray(record.observations) &&
+    record.observations.every(
+      (o: unknown) =>
+        typeof o === "object" &&
+        o !== null &&
+        typeof (o as HashObservation).hash === "string" &&
+        typeof (o as HashObservation).firstSeenAt === "string" &&
+        typeof (o as HashObservation).lastSeenAt === "string" &&
+        typeof (o as HashObservation).count === "number",
+    )
+  );
 }
 
 export function memoryWatchStore(seed: TilesetWatchRecord[] = []): TilesetWatchStore {
@@ -351,6 +405,17 @@ async function runCheck(options: CheckOptions): Promise<CheckResult> {
     previous = store.load(url);
   } catch (cause) {
     alerts.push({ kind: "watch-degraded", url, detail: `讀取失敗:${messageOf(cause)}` });
+  }
+
+  // Checked here rather than inside one store, so every store implementation —
+  // including whatever a later ticket writes — gets the same guarantee.
+  if (previous !== null && !isWellFormedRecord(previous)) {
+    alerts.push({
+      kind: "watch-degraded",
+      url,
+      detail: "既有紀錄格式不符,已捨棄並重新建立",
+    });
+    previous = null;
   }
 
   const sample = await readTilesetSample(url, options.fetchImpl ?? fetch, options.timeoutMs);

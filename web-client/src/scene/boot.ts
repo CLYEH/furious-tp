@@ -18,6 +18,7 @@ import {
 } from "cesium";
 
 import { NLSC_BUILDING_TILESET_URL } from "../config/nlsc.js";
+import { messageOf } from "../errors.js";
 import { INITIAL_CAMERA } from "../config/scene.js";
 import {
   type TilesetAlert,
@@ -87,12 +88,21 @@ export async function bootScene(container: HTMLElement): Promise<SceneHandle> {
   // D5. Kicked off without blocking the scene: the fingerprint costs one more
   // request for a document the service refuses to let anyone cache, and the
   // frame budget is not going to pay for it.
-  void checkTilesetFingerprint({
+  //
+  // `.catch` rather than `void`: a fire-and-forget promise that can reject is a
+  // silent failure channel, and it was one. A malformed stored record threw
+  // before either guard inside the check, and `void` turned that into an
+  // unhandled rejection nobody saw — on every load of that browser, forever.
+  // The shape check upstream handles that particular record; this makes the
+  // CLASS of it visible rather than invisible.
+  checkTilesetFingerprint({
     url: NLSC_BUILDING_TILESET_URL,
     store: watchStore(warn),
     emit: (alert: TilesetAlert) => {
       warn(describeAlert(alert));
     },
+  }).catch((cause: unknown) => {
+    warn(`tileset 指紋檢查失敗,本次未執行改版偵測:${messageOf(cause)}`);
   });
 
   return { widget, tileset, warnings: status.warnings };

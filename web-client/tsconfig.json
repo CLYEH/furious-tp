@@ -5,7 +5,7 @@
     "moduleResolution": "NodeNext",
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "noEmit": true,
-    "rootDir": "src",
+    "rootDir": ".",
     "strict": true,
     "noUncheckedIndexedAccess": true,
     "noImplicitOverride": true,
@@ -14,5 +14,10 @@
     "skipLibCheck": true,
     "types": ["node"]
   },
-  "include": ["src"]
+  // e2e/ is included because it is now the only observer of the shipping path:
+  // `gates` runs lint/typecheck/build/test and none of those load the built page,
+  // so a bundle that no longer matches what public/index.html imports is green in
+  // CI and dead in the browser. Leaving the one thing that would notice without
+  // type-checking is not a saving.
+  "include": ["src", "e2e"]
 }
