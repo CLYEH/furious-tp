@@ -329,6 +329,35 @@ def test_an_interrupted_download_leaves_no_part_file(tmp_path, monkeypatch):
     assert dest.read_bytes() == b"the-raster-downloaded-last-week"
 
 
+def test_an_interrupt_at_the_final_move_leaves_no_part_file(tmp_path, monkeypatch):
+    """The download's last step sits in a *second* try, and it was left out.
+
+    Adding the clause above to the streaming block only would repeat, one
+    level down, the very defect it fixes: `_publish` keeps both of its renames
+    inside the one `except BaseException`, while here the move that puts a
+    completed download into place has its own try with `except OSError` alone.
+    An interrupt raised in the handful of bytecodes before that rename runs
+    therefore escapes with the `.part` still on disk — and at that point the
+    `.part` is the *whole* download, gigabytes of it, one rename away from
+    being the file the operator wanted.
+
+    Narrow, but not narrower than the code is careful about elsewhere, and the
+    clause that closes it is three lines with nothing to weigh against it.
+    """
+    monkeypatch.setattr(requests, "get", lambda *a, **k: _FakeResponse((b"abcdef",)))
+
+    def interrupted(src, dst):
+        raise KeyboardInterrupt()
+
+    monkeypatch.setattr(os, "replace", interrupted)
+    dest = tmp_path / "dtm.tif"
+    dest.write_bytes(b"the-raster-downloaded-last-week")
+    with pytest.raises(KeyboardInterrupt):
+        download_source("https://example.invalid/dtm.tif", dest, timeout=30.0)
+    assert list(tmp_path.glob("*.part")) == []
+    assert dest.read_bytes() == b"the-raster-downloaded-last-week"
+
+
 def test_a_failed_download_does_not_destroy_the_copy_already_on_disk(tmp_path, monkeypatch):
     """The `.part` hop guards what is already there, not just tidiness.
 
