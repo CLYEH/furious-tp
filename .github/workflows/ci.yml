@@ -216,6 +216,50 @@ jobs:
           fi
           rm -rf "$acq"
 
+          # Second acquisition defect, same line as the first, one more flag
+          # (FTP-57 B2). Rename detection is on by default (diff.renames, git
+          # >= 2.9) and --name-only then prints ONLY the destination, so a PR
+          # that moves a module OUT of scene-pipeline/ never shows a path under
+          # scene-pipeline/ — the Python job is skipped by the very change that
+          # just removed a module from the package. The source path is not
+          # missing from the diff, only from this output format: --name-status
+          # would print "R100 <source> <destination>".
+          ren="$(mktemp -d)"
+          (
+            cd "$ren"
+            git init -q .
+            mkdir -p scene-pipeline/src web-client/src
+            printf 'def load():\n    return 1\n' > scene-pipeline/src/loader.py
+            git add -A
+            git -c user.email=ci@ci -c user.name=ci commit -qm base
+            git branch base
+            git mv scene-pipeline/src/loader.py web-client/src/loader.py
+            git -c user.email=ci@ci -c user.name=ci commit -qm move-out
+          ) > /dev/null
+
+          got="$( (cd "$ren" && changed_files base HEAD) | route )"
+          want="gates=true docs=false python=true"
+          if [ "$got" = "$want" ]; then
+            echo "  ok   moving a module out of scene-pipeline/ still runs the Python job"
+          else
+            echo "  FAIL moving a module out of scene-pipeline/ still runs the Python job: want [$want] got [$got]"
+            exam_fail=1
+          fi
+
+          # A dead acquisition layer must abort, not hand routing an empty list
+          # (FTP-57 S5). changed_files is a pipeline, so its exit status is the
+          # guard's, not git's: without pipefail a failed revision lookup is
+          # indistinguishable from "nothing changed" — and "nothing changed"
+          # skips docs AND python. Every failure in this layer has to fall
+          # towards running the checks, never towards skipping them.
+          if ( cd "$ren" && changed_files origin/nonexistent HEAD ) > /dev/null 2>&1; then
+            echo "  FAIL a failed diff aborts instead of routing an empty list"
+            exam_fail=1
+          else
+            echo "  ok   a failed diff aborts instead of routing an empty list"
+          fi
+          rm -rf "$ren"
+
           # Paths holding " or \ or a control character stay quoted even with
           # quotePath off, and cannot be routed correctly either. Refuse to
           # route them: a red profile blocks the PR, a skipped job does not
@@ -225,6 +269,18 @@ jobs:
             exam_fail=1
           else
             echo "  ok   a still-quoted path is refused, not mis-routed"
+          fi
+
+          # The case above puts the quoted path on the FIRST line, which lets a
+          # guard that only inspects the start of the list pass it (FTP-53
+          # verification V12). A real diff is sorted by path, so the quoted
+          # entry is usually somewhere in the middle. Same list, quoted path
+          # second.
+          if printf '%s\n' 'scene-pipeline/src/ok.py' '"docs/a\"b.md"' | refuse_quoted > /dev/null 2>&1; then
+            echo "  FAIL a quoted path is refused wherever it sits in the list: want refusal, got acceptance"
+            exam_fail=1
+          else
+            echo "  ok   a quoted path is refused wherever it sits in the list"
           fi
 
           # --- exam: output emission ----------------------------------------
@@ -271,6 +327,35 @@ jobs:
               exam_fail=1
             fi
           }
+          # wiring() counts lines in the WHOLE file, so it answers "does this
+          # string exist", not "is it attached to the right job" — which is how
+          # nine green assertions coexisted with docs and python having traded
+          # `if:` lines (FTP-57 B3). job_field() reads one job block at a time:
+          # from "^  <name>:" to the next token in column 3. Assertions written
+          # with it cannot satisfy themselves either, structurally — they live
+          # in the profile job and never look at it.
+          job_field() {
+            # job_field <job> <ERE> — matching lines inside <job>'s block only.
+            # The pattern travels in the environment, not through -v: awk
+            # expands escape sequences in a -v assignment, which silently turns
+            # \. into . and \$ into $ (warned about on stderr, not an error).
+            # Patterns here then mean exactly what they mean to grep -E.
+            job_pat="$2" awk -v job="$1" '
+              $0 == "  " job ":" { inj = 1; next }
+              /^  [^ ]/ { inj = 0 }
+              inj && $0 ~ ENVIRON["job_pat"] { print }
+            ' .github/workflows/ci.yml
+          }
+          job_wiring() {
+            # job_wiring <name> <job> <expected match count> <ERE>
+            n="$(job_field "$2" "$4" | grep -c '' || true)"
+            if [ "$n" = "$3" ]; then
+              echo "  ok   $1"
+            else
+              echo "  FAIL $1: want $3 matching line(s) in job $2, got $n"
+              exam_fail=1
+            fi
+          }
           wiring "gates runs unless routing explicitly says false" 1 \
             "^ *if: needs\.profile\.outputs\.run_gates != 'false'\$"
           wiring "docs runs unless routing explicitly says false" 1 \
@@ -285,10 +370,92 @@ jobs:
             '^ *run_docs: .*steps\.decide\.outputs\.run_docs'
           wiring "profile exports run_python" 1 \
             '^ *run_python: .*steps\.decide\.outputs\.run_python'
-          wiring "the routing diff is read with quoting off" 1 \
-            'git -c core\.quotePath=false diff --name-only'
+          wiring "the routing diff is read with quoting off and renames off" 1 \
+            'git -c core\.quotePath=false diff --name-only --no-renames'
           wiring "the link check reads its file list with quoting off" 1 \
             'git -c core\.quotePath=false ls-files'
+
+          # Each conditional job is gated by ITS OWN output and waits for the
+          # job that produces it. Counted per job block, so trading two `if:`
+          # lines — legal YAML, every global count still 1 — is a named red.
+          job_wiring "the gates job is gated on its own run_gates output" gates 1 \
+            "^ *if: needs\.profile\.outputs\.run_gates != 'false'\$"
+          job_wiring "the docs job is gated on its own run_docs output" docs 1 \
+            "^ *if: needs\.profile\.outputs\.run_docs != 'false'\$"
+          job_wiring "the python job is gated on its own run_python output" python 1 \
+            "^ *if: needs\.profile\.outputs\.run_python != 'false'\$"
+          job_wiring "the gates job waits for profile" gates 1 '^ *needs: profile$'
+          job_wiring "the docs job waits for profile" docs 1 '^ *needs: profile$'
+          job_wiring "the python job waits for profile" python 1 '^ *needs: profile$'
+          # And the hard floor stays unconditional: gating protocol on routing
+          # would make a broken route look green on every required check.
+          job_wiring "the protocol floor is gated on nothing" protocol 0 \
+            '^ *(if|needs):'
+
+          # A job whose body does not run what its name claims is the same
+          # silent green one layer in: deleting a step, or letting it fail
+          # without failing the job, leaves the check reported as passed
+          # (FTP-53 verification V23-V26). `||` is barred outright — every
+          # legitimate step here is a bare command.
+          job_wiring "the python job actually runs ruff" python 1 \
+            '^ *- run: ruff check \.$'
+          job_wiring "the python job actually runs pytest" python 1 \
+            '^ *- run: pytest$'
+          job_wiring "the python job swallows no failure" python 0 \
+            '(continue-on-error|[|][|])'
+          job_wiring "the gates job actually runs lint" gates 1 \
+            '^ *- run: npm run lint$'
+          job_wiring "the gates job actually runs typecheck" gates 1 \
+            '^ *- run: npm run typecheck$'
+          job_wiring "the gates job actually runs build" gates 1 \
+            '^ *- run: npm run build$'
+          job_wiring "the gates job actually runs the tests" gates 1 \
+            '^ *- run: npm run test$'
+          job_wiring "the gates job swallows no failure" gates 0 \
+            '(continue-on-error|[|][|])'
+          job_wiring "the docs job actually runs markdownlint" docs 1 \
+            'markdownlint-cli2'
+          job_wiring "the docs job actually runs the link check" docs 1 \
+            'markdown-link-check'
+          job_wiring "the docs job swallows no failure" docs 0 \
+            '(continue-on-error|[|][|])'
+
+          # The Python the job installs must be the floor the package declares,
+          # read out of pyproject.toml rather than restated here — a version
+          # pinned below requires-python tests a Python this package does not
+          # support, and nothing else in CI would notice.
+          py_want="$(sed -n 's/^requires-python = ">=\([0-9][0-9.]*\)".*/\1/p' \
+            scene-pipeline/pyproject.toml 2>/dev/null || true)"
+          py_got="$(job_field python '^ *python-version:' | sed 's/[^"]*"\([^"]*\)".*/\1/')"
+          if [ -n "$py_want" ] && [ "$py_got" = "$py_want" ]; then
+            echo "  ok   the python job pins the requires-python floor ($py_want)"
+          else
+            echo "  FAIL the python job pins the requires-python floor: want [$py_want] got [$py_got]"
+            exam_fail=1
+          fi
+
+          # Everything above proves the seams are correct. These prove the real
+          # decision GOES THROUGH them — the gap that let B1 be reinstated at
+          # the call site with the exam still at 27/27 (verification V28): the
+          # acquisition function stayed present and correct, nobody called it.
+          # Each seam is therefore pinned twice: once as behaviour, once as the
+          # only path from the diff to the jobs.
+          wiring "the real decision reads its file list through changed_files" 1 \
+            '^ *changed="\$\(changed_files '
+          wiring "the real decision routes through route" 1 \
+            '^ *decision="\$\(printf .*\| route\)"$'
+          wiring "the real decision emits through emit_outputs" 1 \
+            '^ *emit_outputs "\$decision" '
+          wiring "the job set is written to the outputs file in one place only" 1 \
+            '\$GITHUB_OUTPU[T]"'
+          wiring "no unguarded diff bypasses the acquisition layer" 0 \
+            'git diff --name-onl[y]'
+          wiring "changed_files pipes through the quoted-path guard" 1 \
+            '\| refuse_quoted$'
+          wiring "the decide step aborts on any failing command" 1 \
+            '^ *set -eu$'
+          wiring "the decide step aborts on a failure anywhere in a pipeline" 1 \
+            '^ *set -o pipefail$'
 
           if [ "$exam_fail" -ne 0 ]; then
             echo "routing self-test FAILED — refusing to route this PR"
