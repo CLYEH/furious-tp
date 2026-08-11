@@ -113,9 +113,35 @@ describe("assembleReport — a complete run", () => {
     expect(cold?.summary?.p95Ms).toBe(summariseSeries([8, 9, 10]).p95Ms);
   });
 
+  it("summarises the SECOND series separately from the first", () => {
+    // The secondary series exists solely to keep the display cadence visible
+    // rather than silently reported as frame time. A mutant replacing
+    // presentSummary with a copy of the primary summary survived the whole
+    // exam, which means that protection was not actually being checked.
+    const report = assembleReport(input());
+    const cold = report.routes.find((r) => r.cache === "cold");
+    // measurement() builds presentIntervalsMs as frameTimesMs + 1.
+    expect(cold?.summary?.p50Ms).toBe(9);
+    expect(cold?.presentSummary?.p50Ms).toBe(10);
+    expect(cold?.presentSummary?.p50Ms).not.toBe(cold?.summary?.p50Ms);
+  });
+
   it("keeps the requested route order, so two runs diff cleanly", () => {
     const report = assembleReport(input());
     expect(report.routes.map((r) => `${r.routeId}:${r.cache}`)).toEqual(["a:cold", "a:warm"]);
+  });
+});
+
+describe("assembleReport — nothing was asked for", () => {
+  it("refuses to call a run with no expected routes valid", () => {
+    // README states unconditionally that no situation produces a normal-looking
+    // JSON containing half a run. An empty plan produced a normal-looking JSON
+    // containing NO run. The CLI blocks this, but runBench is the module FTP-49
+    // calls directly, and the claim was unconditional.
+    const report = assembleReport(input({ expected: [], measurements: [] }));
+    expect(report.valid).toBe(false);
+    expect(report.invalidReason).toMatch(/沒有任何|no routes/i);
+    expect(report.routes).toEqual([]);
   });
 });
 

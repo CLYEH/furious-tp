@@ -20,7 +20,7 @@ import { parseArgs } from "node:util";
 import { fileURLToPath } from "node:url";
 
 import { type GpuPreference, createPlaywrightDriver } from "./src/driver.ts";
-import type { BenchReport, CacheState } from "./src/report.ts";
+import type { BenchReport, BenchRunConfig, CacheState } from "./src/report.ts";
 import { type RouteDefinition, parseRoute } from "./src/route.ts";
 import { runBench } from "./src/session.ts";
 import { buildBenchPage, serveBenchPage } from "./src/site.ts";
@@ -103,6 +103,13 @@ function summarise(report: BenchReport): string {
   lines.push(`  valid: ${report.valid}${report.valid ? "" : ` — ${report.invalidReason ?? ""}`}`);
   lines.push(`  GPU:   ${report.environment.gpuRenderer || "(未知)"}`);
   lines.push(`  GPU 接受: ${report.gpuAccepted}   flags: ${report.environment.launchArgs.join(" ")}`);
+  if (report.config !== null) {
+    lines.push(
+      `  設定:  routes=${report.config.routeIds.join(",")} cache=${report.config.cacheStates.join(",")}` +
+        ` memory=${report.config.memoryMinutes}min warmup=${report.config.warmupFrames}` +
+        ` viewport=${report.config.viewport.width}x${report.config.viewport.height} gpu=${report.config.gpuPreference}`,
+    );
+  }
   lines.push(
     `  vsync: frameRateLimitDefeated=${report.environment.frameRateLimitDefeated}` +
       ` (present interval median ${report.environment.presentIntervalMedianMs?.toFixed(2) ?? "?"} ms)`,
@@ -132,9 +139,37 @@ function summarise(report: BenchReport): string {
   return lines.join("\n");
 }
 
+async function reclaimOldWorkspaces(): Promise<void> {
+  try {
+    const entries = await readdir(tmpdir());
+    const stale = entries.filter((name) => name.startsWith("ftp48-bench-"));
+    let reclaimed = 0;
+    for (const name of stale) {
+      const path = join(tmpdir(), name);
+      const removed = await rm(path, { recursive: true, force: true })
+        .then(() => true)
+        .catch(() => false);
+      if (removed) reclaimed += 1;
+    }
+    if (reclaimed > 0) console.log(`bench: 已回收 ${reclaimed} 個先前殘留的暫存目錄`);
+    if (stale.length > reclaimed) {
+      console.log(`bench: ${stale.length - reclaimed} 個暫存目錄仍被佔用,留待下次回收`);
+    }
+  } catch {
+    // Reclaiming is housekeeping; it must never stop a run from starting.
+  }
+}
+
 async function main(): Promise<number> {
   const routes = await loadRoutes();
   if (routes.length === 0) fail("沒有可跑的路線");
+
+  // Reclaim what earlier runs could not delete. Cleanup is best effort by
+  // design (a locked Chrome profile must never cost us the report), but best
+  // effort with no upper bound is a leak: this ticket left a 52 MB profile
+  // behind after one EBUSY. Also best effort — a directory still in use by a
+  // concurrent run simply stays.
+  await reclaimOldWorkspaces();
 
   const workspace = await mkdtemp(join(tmpdir(), "ftp48-bench-"));
   const pageDir = join(workspace, "page");
@@ -174,12 +209,28 @@ async function main(): Promise<number> {
       onLog: (message) => console.log(message),
     });
 
+    // Recorded verbatim, so the report can state the settings it ran under.
+    // `npm run bench --cache cold` (no `--`) lets npm swallow the flag entirely
+    // — run.ts then sees a legal set of defaults and produces a perfectly
+    // normal report for a configuration nobody chose. This is what makes that
+    // visible afterwards.
+    const config: BenchRunConfig = {
+      routeIds: routes.map((r) => r.id),
+      cacheStates,
+      memoryMinutes,
+      warmupFrames,
+      viewport,
+      gpuPreference,
+      headless: !(values.headed ?? false),
+    };
+
     report = await runBench({
       routes,
       cacheStates,
       driver,
       signal: controller.signal,
       memoryMinutes,
+      config,
       onProgress: (progress) => console.log(`bench: ${progress.message}`),
     });
   } finally {

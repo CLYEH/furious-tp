@@ -220,13 +220,19 @@ describe("createAutopilot", () => {
     // reparameterisation the camera crawls through the first leg and sprints
     // through the second, so p95 would depend on how the author happened to
     // space the file rather than on the scene.
+    //
+    // The legs are DIAGONAL, not due east. The first version of this fixture
+    // held latitude constant, and on a purely east-west path every constant
+    // longitude scale produces the same arc-length parameterisation — so the
+    // case could not fail no matter what the projection did, and a mutant
+    // setting metres-per-degree-longitude to 1 (a 10^5 error) survived it.
     const uneven = {
       ...validRoute(),
       durationSeconds: 4,
       waypoints: [
         { longitude: 121.5600, latitude: 25.0300, height: 300, headingDegrees: 0, pitchDegrees: -20, rollDegrees: 0 },
-        { longitude: 121.5605, latitude: 25.0300, height: 300, headingDegrees: 0, pitchDegrees: -20, rollDegrees: 0 },
-        { longitude: 121.5900, latitude: 25.0300, height: 300, headingDegrees: 0, pitchDegrees: -20, rollDegrees: 0 },
+        { longitude: 121.5604, latitude: 25.0303, height: 300, headingDegrees: 0, pitchDegrees: -20, rollDegrees: 0 },
+        { longitude: 121.5850, latitude: 25.0480, height: 300, headingDegrees: 0, pitchDegrees: -20, rollDegrees: 0 },
       ],
     };
     const auto = createAutopilot(parseRoute(uneven));
@@ -242,10 +248,66 @@ describe("createAutopilot", () => {
     expect(max / min).toBeLessThan(1.05);
   });
 
-  it("reports the speed it is flying at", () => {
-    const auto = createAutopilot(parseRoute({ ...validRoute(), durationSeconds: 4 }));
-    expect(auto.speedMps).toBeGreaterThan(0);
-    expect(auto.speedMps).toBeCloseTo(auto.totalMetres / 4, 6);
+  /**
+   * The route's length in METRES, checked against an independent second opinion.
+   *
+   * Everything else about the geometry is self-consistent: `speedMps` is defined
+   * as `totalMetres / durationSeconds`, so asserting one against the other pins
+   * nothing. Nothing pinned the projection itself, and a mutant replacing
+   * metres-per-degree-longitude with 1 — five orders of magnitude — survived the
+   * whole exam. "Fixed speed means fixed metres per frame" is the README's
+   * headline claim and the reason AC1's replay is meaningful, so the metres have
+   * to be real metres.
+   *
+   * Haversine is computed here rather than borrowed from route.ts on purpose: a
+   * second opinion that shares the first one's arithmetic is not a second
+   * opinion.
+   */
+  it("measures its length in real metres", () => {
+    const straight = {
+      ...validRoute(),
+      durationSeconds: 4,
+      waypoints: [
+        { longitude: 121.5500, latitude: 25.0200, height: 300, headingDegrees: 0, pitchDegrees: -20, rollDegrees: 0 },
+        { longitude: 121.5800, latitude: 25.0450, height: 300, headingDegrees: 0, pitchDegrees: -20, rollDegrees: 0 },
+      ],
+    };
+    const route = parseRoute(straight);
+    const auto = createAutopilot(route);
+    const expected = haversineMetres(route.waypoints[0]!, route.waypoints[1]!);
+
+    // Two waypoints, so the spline IS the straight line between them and the
+    // lengths are directly comparable. ~4.2 km here; 1% covers the difference
+    // between the module's equirectangular scale and a spherical one.
+    expect(expected).toBeGreaterThan(3_000);
+    expect(auto.totalMetres).toBeGreaterThan(expected * 0.99);
+    expect(auto.totalMetres).toBeLessThan(expected * 1.01);
+    expect(auto.speedMps).toBeGreaterThan((expected / 4) * 0.99);
+    expect(auto.speedMps).toBeLessThan((expected / 4) * 1.01);
+  });
+
+  it("scales longitude by latitude, not one-to-one", () => {
+    // A due-north leg and a due-east leg of the SAME degree span must not have
+    // the same length: at 25 degrees north a degree of longitude is about 9%
+    // shorter. This is the specific property the old east-west-only fixture
+    // could not see.
+    const leg = (dLon: number, dLat: number) =>
+      createAutopilot(
+        parseRoute({
+          ...validRoute(),
+          durationSeconds: 1,
+          waypoints: [
+            { longitude: 121.56, latitude: 25.03, height: 300, headingDegrees: 0, pitchDegrees: -20, rollDegrees: 0 },
+            { longitude: 121.56 + dLon, latitude: 25.03 + dLat, height: 300, headingDegrees: 0, pitchDegrees: -20, rollDegrees: 0 },
+          ],
+        }),
+      ).totalMetres;
+
+    const east = leg(0.01, 0);
+    const north = leg(0, 0.01);
+    expect(east).toBeLessThan(north);
+    // cos(25 degrees) = 0.9063.
+    expect(east / north).toBeCloseTo(Math.cos((25.03 * Math.PI) / 180), 2);
   });
 
   it("interpolates heading the short way around the circle", () => {
@@ -355,6 +417,27 @@ describe("the shipped M1 routes", () => {
     }
   });
 });
+
+/**
+ * Great-circle distance, written out here as an INDEPENDENT second opinion.
+ *
+ * Deliberately not imported from route.ts and deliberately a different model
+ * (spherical rather than equirectangular): a check that shares the arithmetic
+ * it is checking cannot disagree with it.
+ */
+function haversineMetres(
+  a: { longitude: number; latitude: number },
+  b: { longitude: number; latitude: number },
+): number {
+  const R = 6_371_008.8;
+  const rad = (d: number): number => (d * Math.PI) / 180;
+  const dLat = rad(b.latitude - a.latitude);
+  const dLon = rad(b.longitude - a.longitude);
+  const h =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(rad(a.latitude)) * Math.cos(rad(b.latitude)) * Math.sin(dLon / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(h));
+}
 
 /** Equirectangular metres about the first point — good to well under 1% over a few km. */
 function metresBetween(

@@ -125,6 +125,27 @@ export interface RouteReport {
   drift: DriftAnalysis | null;
 }
 
+/**
+ * The settings this run actually used, after parsing.
+ *
+ * "The same version measured twice" has to mean "with the same settings", and
+ * a report could not previously say what its own settings were. That gap has
+ * already bitten this ticket: `npm run bench --cache cold` lets npm swallow the
+ * flag (it creates a ./cold cache directory instead), run.ts never sees it,
+ * silently uses the default, and produces a completely normal-looking report
+ * for a configuration nobody chose. Rejecting positional arguments does not
+ * catch that — a swallowed flag leaves no positional behind.
+ */
+export interface BenchRunConfig {
+  routeIds: string[];
+  cacheStates: CacheState[];
+  memoryMinutes: number;
+  warmupFrames: number;
+  viewport: { width: number; height: number };
+  gpuPreference: string;
+  headless: boolean;
+}
+
 export interface BenchReport {
   valid: boolean;
   invalidReason: string | null;
@@ -137,6 +158,8 @@ export interface BenchReport {
   gpuRenderer: string;
   gpuAccepted: boolean;
   schemaVersion: number;
+  /** null only for callers that did not supply one (the exam's fakes). */
+  config: BenchRunConfig | null;
   startedAt: string;
   finishedAt: string;
   environment: BenchEnvironment;
@@ -157,6 +180,8 @@ export interface AssembleInput {
   extraProblems?: readonly string[];
   /** Defaults to the reference rig; data rather than code so FTP-47 can move it. */
   rig?: RigExpectation;
+  /** The settings this run used. Absent only in unit tests. */
+  config?: BenchRunConfig;
 }
 
 /**
@@ -207,6 +232,15 @@ function environmentProblem(environment: BenchEnvironment): string | null {
 
 export function assembleReport(input: AssembleInput): BenchReport {
   const problems: string[] = [];
+
+  if (input.expected.length === 0) {
+    // A run that was never asked to measure anything used to serialise as a
+    // perfectly valid report with `routes: []`. The README's claim that no
+    // situation produces a normal-looking JSON containing half a run is
+    // unconditional, and this was a normal-looking JSON containing none of one.
+    // The CLI blocks it, but runBench is the module FTP-49 calls directly.
+    problems.push("沒有任何預定路線,本次未量測任何東西");
+  }
 
   if (input.interrupted) {
     problems.push("執行中斷:本次量測未跑完,以下結果為部分資料");
@@ -313,6 +347,7 @@ export function assembleReport(input: AssembleInput): BenchReport {
     gpuRenderer: input.environment.gpuRenderer,
     gpuAccepted: gpu.accepted,
     schemaVersion: REPORT_SCHEMA_VERSION,
+    config: input.config ?? null,
     startedAt: input.startedAt,
     finishedAt: input.finishedAt,
     environment: input.environment,

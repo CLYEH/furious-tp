@@ -12,6 +12,7 @@
 
 - [BROWSERS.md](BROWSERS.md) — 瀏覽器/裝置支援矩陣(Chrome 主測)
 - [`web-client/bench/RIG.md`](../web-client/bench/RIG.md) — bench reference rig 規格、量測條件與開跑前檢查(RFC D6;效能判定所依據的機器)
+- [`web-client/bench/README.md`](../web-client/bench/README.md) — bench harness:`npm run bench` 用法、量到的到底是什麼、報告格式,以及**本輸出為何不能判定 D1 的 6 ms**(RFC D6)
 
 ## 調查(spikes)
 

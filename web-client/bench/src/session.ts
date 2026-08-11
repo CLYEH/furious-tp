@@ -15,6 +15,7 @@ import { summariseMemory } from "./memory.ts";
 import type {
   BenchEnvironment,
   BenchReport,
+  BenchRunConfig,
   CacheState,
   ExpectedRoute,
   RouteFailure,
@@ -69,6 +70,8 @@ export interface RunBenchOptions {
   memoryMinutes?: number;
   /** Defaults to the reference rig. Data, so FTP-47 can move it without code changes. */
   rig?: RigExpectation;
+  /** Recorded verbatim in the report so a run can state its own settings. */
+  config?: BenchRunConfig;
   now?: () => string;
 }
 
@@ -249,5 +252,6 @@ export async function runBench(options: RunBenchOptions): Promise<BenchReport> {
     failures,
     extraProblems: extraProblems.map(bounded),
     ...(options.rig === undefined ? {} : { rig: options.rig }),
+    ...(options.config === undefined ? {} : { config: options.config }),
   });
 }

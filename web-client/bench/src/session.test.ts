@@ -469,7 +469,13 @@ describe("runBench — the last phase, not just the last route", () => {
     // Silence here would read as "memory was fine", which is the same shape as
     // summarising an empty series to zero.
     const fake = fakeDriver();
-    const { runMemoryCycle: _omitted, ...withoutCycle } = fake.driver;
+    // Built explicitly rather than by destructuring the fake: pulling a method
+    // off an object detaches it from its receiver, which lint rightly objects to.
+    const withoutCycle: BenchDriver = {
+      readEnvironment: () => fake.driver.readEnvironment(),
+      runRoute: (request) => fake.driver.runRoute(request),
+      close: () => fake.driver.close(),
+    };
     const report = await runBench({
       routes: [route("a")],
       cacheStates: ["cold"],
@@ -478,6 +484,41 @@ describe("runBench — the last phase, not just the last route", () => {
     });
     expect(report.valid).toBe(false);
     expect(report.invalidReason).toMatch(/記憶體|memory/i);
+  });
+});
+
+describe("runBench — the settings a report ran under", () => {
+  it("records the configuration it was given", async () => {
+    // "The same version measured twice" has to mean "with the same settings".
+    // A report that cannot state its own settings cannot support that, and this
+    // ticket already produced runs whose --cache flag npm had swallowed.
+    const fake = fakeDriver();
+    const config = {
+      routeIds: ["a"],
+      cacheStates: ["cold" as const],
+      memoryMinutes: 0,
+      warmupFrames: 0,
+      viewport: { width: 1920, height: 1080 },
+      gpuPreference: "high-performance",
+      headless: true,
+    };
+    const report = await runBench({
+      routes: [route("a")],
+      cacheStates: ["cold"],
+      driver: fake.driver,
+      config,
+    });
+    expect(report.config).toEqual(config);
+  });
+
+  it("says the settings are unknown rather than inventing them", async () => {
+    const fake = fakeDriver();
+    const report = await runBench({
+      routes: [route("a")],
+      cacheStates: ["cold"],
+      driver: fake.driver,
+    });
+    expect(report.config).toBeNull();
   });
 });
 

@@ -93,6 +93,13 @@ interface HeapUsage {
   usedSize: number;
 }
 
+/**
+ * Frames per page.evaluate call. Small enough that an abort is acted on within
+ * a few seconds, large enough that the per-batch round-trip is noise against a
+ * route of thousands of frames.
+ */
+const POSE_BATCH = 300;
+
 const MEASUREMENT_NOTE =
   "主序列 frameTimesMs = 手動驅動 render loop 下 widget.render() 的主執行緒耗時(不含 GPU 非同步執行);" +
   "次序列 presentIntervalsMs = 相鄰呈現幀的間隔(受顯示更新率限制)。";
@@ -287,12 +294,44 @@ export function createPlaywrightDriver(options: PlaywrightDriverOptions): BenchD
           `${autopilot.speedMps.toFixed(1)} m/s`,
       );
 
-      const result = await withPage(userDataDir, (page) =>
-        page.evaluate(
-          ([posesArg, warmupArg]) => globalThis.__ftpBench!.runPoses(posesArg, warmupArg),
-          [poses, options.warmupFrames] as const,
-        ),
-      );
+      /**
+       * Sent in batches so the abort signal can actually take effect.
+       *
+       * It used to be one page.evaluate for all 2101 frames, which meant
+       * `request.signal` was accepted and then never read: session.ts pinned
+       * interruption against a contract the production driver did not honour,
+       * and Ctrl-C left the operator waiting up to six minutes for a route to
+       * finish before the run could wind up.
+       *
+       * The batch boundary costs one round-trip to Node between chunks. It does
+       * NOT affect frameTimesMs, which is timed per frame inside the page; the
+       * only distorted value is the presented-frame interval spanning each
+       * boundary, and those are dropped below rather than reported as stalls.
+       */
+      const result = await withPage(userDataDir, async (page) => {
+        const frameTimesMs: number[] = [];
+        const presentIntervalsMs: number[] = [];
+        const warnings: string[] = [];
+
+        for (let start = 0; start < poses.length; start += POSE_BATCH) {
+          if (request.signal.aborted) break;
+          const batch = poses.slice(start, start + POSE_BATCH);
+          const warmup = start === 0 ? options.warmupFrames : 0;
+          const chunk = await page.evaluate(
+            ([posesArg, warmupArg]) => globalThis.__ftpBench!.runPoses(posesArg, warmupArg),
+            [batch, warmup] as const,
+          );
+          frameTimesMs.push(...chunk.frameTimesMs);
+          // Drop the first present interval of every later batch: it spans the
+          // round-trip to Node and is not a frame the renderer produced.
+          presentIntervalsMs.push(
+            ...(start === 0 ? chunk.presentIntervalsMs : chunk.presentIntervalsMs.slice(1)),
+          );
+          warnings.splice(0, warnings.length, ...chunk.warnings);
+        }
+
+        return { frameTimesMs, presentIntervalsMs, framesMeasured: frameTimesMs.length, warnings };
+      });
 
       return {
         routeId: request.route.id,

@@ -24,6 +24,14 @@
  *   Recorded, never enforced: aborting would discard completed data, and the
  *   rule is label, never discard. Whether a batch is usable belongs to the
  *   reader and to FTP-49.
+ *
+ * ONE DELIBERATE DIFFERENCE FROM RIG.md 2.1's preflight, so it is not read as
+ * drift: that check does NOT exempt chrome, because it runs BEFORE bench starts
+ * and any Chrome on the GPU then is the operator's own browsing. This one runs
+ * DURING the measurement, when our browser is legitimately on the GPU, so it
+ * exempts exactly the PIDs launched under our own profile directory — and
+ * nothing else. Everything else follows 2.1: resolve the PID with Get-Process
+ * rather than trusting nvidia-smi's name, and exempt only dwm.
  */
 
 export interface GpuProcess {

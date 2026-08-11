@@ -267,7 +267,26 @@ describe("analyseDrift", () => {
   });
 
   it("throws on a series too short to have a beginning and an end", () => {
+    // The message, not just the type — percentileNearestRank downstream also
+    // throws RangeError, so `toThrow(RangeError)` alone passed with this guard
+    // deleted. It is not cosmetic: without the guard a 4-to-7 frame series
+    // returns a drift ratio computed from a ONE-FRAME window, which this
+    // module's own comment calls noise.
     expect(() => analyseDrift([1, 2, 3])).toThrow(RangeError);
+    expect(() => analyseDrift([1, 2, 3])).toThrow(/序列太短/);
+    expect(() => analyseDrift([1, 2, 3, 4, 5, 6, 7])).toThrow(/序列太短/);
+  });
+
+  it("reports no drift rather than Infinity when the early window is all zeros", () => {
+    // summariseSeries explicitly accepts 0 ms frames, so this guard is
+    // reachable. Without it the ratio is Infinity, which JSON.stringify writes
+    // as null — the exact "a report carrying a null while calling itself valid"
+    // failure this harness defends against everywhere else.
+    const series = [...Array.from({ length: 50 }, () => 0), ...Array.from({ length: 50 }, () => 12)];
+    const result = analyseDrift(series);
+    expect(Number.isFinite(result.driftRatio)).toBe(true);
+    expect(result.driftRatio).toBe(1);
+    expect(result.suspectedThrottling).toBe(false);
   });
 
   it("says how many frames each window covered", () => {
