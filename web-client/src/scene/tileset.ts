@@ -60,13 +60,15 @@ async function attemptLoad<T>(
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     // A loader that throws synchronously lands in the enclosing catch, same as
-    // one that rejects — no wrapper needed. (There was one, with a comment
-    // claiming it was what routed sync throws here. Mutation testing showed
-    // removing it changed nothing, because the comment was wrong.)
+    // one that rejects — no wrapper needed.
+    //
+    // Nor does the abandoned attempt need its rejection "claimed": Promise.race
+    // attaches handlers to every promise it is given, so a load that rejects
+    // after losing the race is already handled and never reaches
+    // unhandledRejection. Measured, not assumed — an earlier version carried a
+    // `loading.catch(() => undefined)` line for this, and deleting it changed
+    // no observable behaviour.
     const loading = load(url);
-    // A load that loses the race can still reject later. Claim it now, or the
-    // rejection surfaces as an unhandled one long after we stopped caring.
-    loading.catch(() => undefined);
 
     return await Promise.race<Attempt<T>>([
       loading.then((value): Attempt<T> => ({ kind: "loaded", value })),

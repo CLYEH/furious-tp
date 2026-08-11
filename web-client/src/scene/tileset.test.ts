@@ -150,6 +150,12 @@ describe("loadNlscTileset — a load that never settles", () => {
     expect(TILESET_LOAD_TIMEOUT_MS).toBeGreaterThan(0);
     expect(TILESET_LOAD_TIMEOUT_MS).toBeLessThanOrEqual(60_000);
   });
+
+  // An abandoned attempt keeps running and eventually rejects. That rejection
+  // is already handled — Promise.race attaches to every promise it is given —
+  // so there is nothing here to assert that could ever come out false, and a
+  // case that cannot fail is worse than no case. The measurement lives in the
+  // comment at the call site instead.
 });
 
 // The endpoint was measured serving a decodable tileset on 4 requests out of 20
