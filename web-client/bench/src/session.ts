@@ -21,6 +21,7 @@ import type {
   RouteMeasurement,
 } from "./report.ts";
 import { assembleReport, bounded } from "./report.ts";
+import { type RigExpectation, checkRigGpu } from "./rig.ts";
 import type { RouteDefinition } from "./route.ts";
 
 export interface RouteRequest {
@@ -63,6 +64,8 @@ export interface RunBenchOptions {
   signal?: AbortSignal;
   onProgress?: (progress: BenchProgress) => void;
   memoryMinutes?: number;
+  /** Defaults to the reference rig. Data, so FTP-47 can move it without code changes. */
+  rig?: RigExpectation;
   now?: () => string;
 }
 
@@ -75,7 +78,8 @@ const UNKNOWN_ENVIRONMENT: BenchEnvironment = {
   launchArgs: [],
   os: "",
   viewport: { width: 0, height: 0 },
-  screen: { width: 0, height: 0, estimatedRefreshHz: 0 },
+  headless: true,
+  screen: { width: 0, height: 0, presentCadenceHz: 0 },
   power: { charging: null, batteryLevel: null, note: "環境讀取失敗,電源狀態未知" },
   frameRateLimitDefeated: false,
   measurementNote: "",
@@ -120,7 +124,16 @@ export async function runBench(options: RunBenchOptions): Promise<BenchReport> {
       extraProblems.push(`無法取得量測環境:${messageOf(cause)}`);
     }
 
-    for (const { route, cache } of plan) {
+    // Checked before anything is measured. On the reference rig Chrome lands on
+    // the integrated GPU unless told otherwise, so this is the DEFAULT outcome,
+    // not an edge case — and spending twenty minutes producing frame times the
+    // report will refuse to bless is pure waste. assembleReport states the
+    // reason; this only records that nothing was measured because of it.
+    const gpu = checkRigGpu(environment.gpuRenderer, options.rig);
+    const measurable = gpu.accepted;
+    if (!measurable) extraProblems.push("GPU 不符 reference rig,已於量測前中止,未取得任何 frame");
+
+    for (const { route, cache } of measurable ? plan : []) {
       if (signal.aborted) {
         interrupted = true;
         break;
@@ -161,6 +174,7 @@ export async function runBench(options: RunBenchOptions): Promise<BenchReport> {
     }
 
     const canRunMemory =
+      measurable &&
       options.memoryMinutes !== undefined &&
       options.memoryMinutes > 0 &&
       !interrupted &&
@@ -214,5 +228,6 @@ export async function runBench(options: RunBenchOptions): Promise<BenchReport> {
     finishedAt: now(),
     failures,
     extraProblems: extraProblems.map(bounded),
+    ...(options.rig === undefined ? {} : { rig: options.rig }),
   });
 }

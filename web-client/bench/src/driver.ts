@@ -141,6 +141,7 @@ export function createPlaywrightDriver(options: PlaywrightDriverOptions): BenchD
       launchArgs,
       os: `${osType()} ${release()}`,
       viewport: page.viewport,
+      headless: !options.headed,
       screen: page.screen,
       power: page.power,
       frameRateLimitDefeated: page.frameRateLimitDefeated,

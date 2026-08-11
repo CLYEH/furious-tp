@@ -54,14 +54,21 @@ export interface BenchEnvironment {
    * and a reader must be able to see it rather than trust that it was passed.
    */
   launchArgs: string[];
+  /**
+   * Headless has no display at all, so the pacing below is a synthetic
+   * compositor cadence rather than a monitor. Recorded so nobody reads a
+   * 32 Hz cadence as a statement about the rig's 144 Hz panel.
+   */
+  headless: boolean;
   screen: {
     width: number;
     height: number;
     /**
-     * Derived from the measured rAF interval, not read from the OS — a page
-     * cannot ask for the refresh rate. Labelled "estimated" for that reason.
+     * Observed presentation cadence, derived from the idle rAF interval — a
+     * page cannot ask the OS for a refresh rate. NOT the monitor's refresh
+     * rate: headless reports its own frame-sink cadence here.
      */
-    estimatedRefreshHz: number;
+    presentCadenceHz: number;
   };
   /** The rig is a laptop, and mains vs battery is a different experiment. */
   power: PowerState;

@@ -60,7 +60,8 @@ const environment = {
   launchArgs: ["--force-high-performance-gpu"],
   os: "Windows 11",
   viewport: { width: 1920, height: 1080 },
-  screen: { width: 1920, height: 1080, estimatedRefreshHz: 60 },
+  headless: true,
+  screen: { width: 1920, height: 1080, presentCadenceHz: 60 },
   power: { charging: true, batteryLevel: 1, note: "navigator.getBattery()" },
   frameRateLimitDefeated: false,
   measurementNote: "scene.render() CPU cost",
@@ -69,6 +70,7 @@ const environment = {
 interface FakeDriverOptions {
   onCall?: (request: RouteRequest, index: number) => void | Promise<void>;
   frameTimes?: number[];
+  gpuRenderer?: string;
 }
 
 /** Records what it was asked to do, in order, and answers with fixed samples. */
@@ -76,7 +78,12 @@ function fakeDriver(options: FakeDriverOptions = {}) {
   const calls: { routeId: string; cache: CacheState }[] = [];
   let closed = 0;
   const driver: BenchDriver = {
-    readEnvironment: () => Promise.resolve(environment),
+    readEnvironment: () =>
+      Promise.resolve(
+        options.gpuRenderer === undefined
+          ? environment
+          : { ...environment, gpuRenderer: options.gpuRenderer },
+      ),
     async runRoute(request: RouteRequest): Promise<RouteMeasurement> {
       const index = calls.length;
       calls.push({ routeId: request.route.id, cache: request.cache });
@@ -265,6 +272,45 @@ describe("runBench — interruption", () => {
     // A headed Chrome that outlives an interrupted bench holds a GPU and keeps
     // rendering; the next run then measures a machine that is already busy.
     expect(fake.closeCount()).toBe(1);
+  });
+});
+
+describe("runBench — wrong GPU", () => {
+  const INTEL_UHD =
+    "ANGLE (Intel, Intel(R) UHD Graphics (0x0000A788) Direct3D11 vs_5_0 ps_5_0, D3D11)";
+
+  it("does not measure at all when the browser landed on the wrong GPU", async () => {
+    // Measuring for twenty minutes to produce numbers the report will refuse to
+    // bless is pure waste, and the wrong-GPU case is not rare on this rig — it
+    // is what happens by default. The check is cheap and comes first.
+    const fake = fakeDriver({ gpuRenderer: INTEL_UHD });
+    const report = await runBench({
+      routes: [route("a"), route("b")],
+      cacheStates: ["cold", "warm"],
+      driver: fake.driver,
+    });
+    expect(fake.calls).toHaveLength(0);
+    expect(report.valid).toBe(false);
+    expect(report.gpuAccepted).toBe(false);
+    expect(report.invalidReason).toMatch(/Intel/);
+  });
+
+  it("still closes the browser it opened to find that out", async () => {
+    const fake = fakeDriver({ gpuRenderer: INTEL_UHD });
+    await runBench({ routes: [route("a")], cacheStates: ["cold"], driver: fake.driver });
+    expect(fake.closeCount()).toBe(1);
+  });
+
+  it("measures normally on the rig's GPU", async () => {
+    // The control for the two cases above: same code path, correct GPU.
+    const fake = fakeDriver();
+    const report = await runBench({
+      routes: [route("a")],
+      cacheStates: ["cold"],
+      driver: fake.driver,
+    });
+    expect(fake.calls).toHaveLength(1);
+    expect(report.valid).toBe(true);
   });
 });
 

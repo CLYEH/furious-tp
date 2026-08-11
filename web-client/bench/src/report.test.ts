@@ -46,7 +46,8 @@ const environment = () => ({
   launchArgs: ["--force-high-performance-gpu"],
   os: "Windows 11",
   viewport: { width: 1920, height: 1080 },
-  screen: { width: 1920, height: 1080, estimatedRefreshHz: 60 },
+  headless: true,
+  screen: { width: 1920, height: 1080, presentCadenceHz: 60 },
   power: { charging: true, batteryLevel: 1, note: "navigator.getBattery()" },
   frameRateLimitDefeated: false,
   measurementNote: "scene.render() CPU cost",
@@ -320,7 +321,9 @@ describe("assembleReport — which GPU actually drew this", () => {
     // A laptop throttles, and battery and mains are different experiments.
     const report = assembleReport(input());
     expect(report.environment.screen.width).toBe(1920);
-    expect(report.environment.screen.estimatedRefreshHz).toBeGreaterThan(0);
+    expect(report.environment.screen.presentCadenceHz).toBeGreaterThan(0);
+    // Headless has no monitor; the cadence must not be read as the panel's.
+    expect(report.environment.headless).toBe(true);
     expect(report.environment.power.charging).toBe(true);
     expect(report.environment.chromeVersion).not.toBe("");
   });

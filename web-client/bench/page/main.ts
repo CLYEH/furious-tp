@@ -58,7 +58,7 @@ export interface BenchPageEnvironment {
   browser: string;
   chromeVersion: string;
   viewport: { width: number; height: number };
-  screen: { width: number; height: number; estimatedRefreshHz: number };
+  screen: { width: number; height: number; presentCadenceHz: number };
   power: BenchPagePower;
   devicePixelRatio: number;
   presentIntervalMedianMs: number;
@@ -204,8 +204,10 @@ async function start(): Promise<void> {
           screen: {
             width: globalThis.screen.width,
             height: globalThis.screen.height,
-            // Derived, not read: a page cannot ask the OS for the refresh rate.
-            estimatedRefreshHz:
+            // Derived, not read: a page cannot ask the OS for the refresh
+            // rate. Under headless this is the synthetic frame-sink cadence,
+            // not the panel — which is why `headless` is recorded beside it.
+            presentCadenceHz:
               presentIntervalMedianMs > 0 ? 1000 / presentIntervalMedianMs : 0,
           },
           power: await readPower(),
