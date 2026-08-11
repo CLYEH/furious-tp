@@ -205,17 +205,20 @@ owner 的 Brave × 2 與 Acrobat 常駐於同一顆 GPU。單元測試涵蓋 `fa
 
 依裁決,AC1b 的重述移交 **FTP-49**(需補的欄位見下方交接段)。
 
-### 記憶體:本專案第一次量到成長
+### 記憶體:本專案第一次量到成長(路線 `xinyi-dense`)
 
-一次完整的 48 分鐘跑(`valid: true`,含 15 分鐘記憶體循環):
+**注意:以下數字全部來自 `xinyi-dense`,不是上面那四筆 `offroad-south`。** 兩組路線相鄰卻不同源 —— `RIG.md` 的規則是每個數字都要能追到產生它的條件,路線就是條件之一。
+
+來源:一次完整的 48 分鐘跑(`valid: true`,含 15 分鐘記憶體循環),報告檔名尾碼 `-fullcw`。
 
 ```
-126.6 MB → 510.5 MB    +303.21%    歷時 15.3 分鐘
+路線 xinyi-dense,15 分鐘記憶體循環
+126.6 MB → 510.5 MB    +303.21%    歷時 15.3 分鐘,樣本數 3
 ```
 
-**D6 的門檻是 < 10%。** 判定屬 FTP-49,但數字先記在這裡。**保留:15 分鐘只裝得下 3 個樣本**,以三點推成長率偏薄,FTP-49 應提高取樣密度再下結論。
+**D6 的門檻是 < 10%。** 判定屬 FTP-49(已另開 **FTP-72** 追);數字先記在這裡。**保留:15 分鐘只裝得下 3 個樣本**,以三點推成長率偏薄,**且尚未排除 `heapBytes()` 本身的可信度** —— 先判定它是不是真的洩漏,再談修。
 
-同一次跑另有一個與本文件既有註記一致的觀察:**warm 的 p95(687.90)比 cold(664.70)慢** —— 與「NLSC 服務禁止快取其 tileset」相符,「熱」並沒有讓場景變快。
+同一次跑、同樣是 **`xinyi-dense`** 的另一個觀察:**warm 的 p95(687.90)比 cold(664.70)慢** —— 與「NLSC 服務禁止快取其 tileset」相符,「熱」並沒有讓場景變快。
 
 ## 三條路線(RFC D6 的 M1 三型)
 
@@ -240,8 +243,16 @@ owner 的 Brave × 2 與 Acrobat 常駐於同一顆 GPU。單元測試涵蓋 `fa
   "gpuRenderer": "ANGLE (NVIDIA, … RTX 4060 …)",   // 哪顆 GPU 畫的
   "gpuAccepted": true,
   "schemaVersion": 2,
-  "environment": { /* CPU / GPU / 瀏覽器 / 啟動旗標 / 螢幕 / 電源 / headless */ },
-  "routes": [ { "valid": …, "frameTimesMs": [...], "summary": {...}, "drift": {...} } ],
+  "config": { /* 本次實際使用的設定:routes / cacheStates / memoryMinutes / warmupFrames / viewport / gpuPreference / headless / maxSeconds */ },
+  "limitations": [ /* 隨數字一起出貨的已知限制,見「已知限制」一節 */ ],
+  "environment": { /* CPU / GPU / 瀏覽器 / 啟動旗標 / 螢幕 / 電源 / headless / externalGpuLoad */ },
+  "routes": [ {
+    "valid": …, "frameTimesMs": [...], "summary": {...}, "drift": {...},
+    "presentIntervalsMs": [...],
+    // 與 frameTimesMs 等長;跨批次邊界的樣本索引記在這裡並排除於 presentSummary 之外
+    "presentIntervalBoundaryIndices": [300, 600],
+    "presentSummary": {...}
+  } ],
   "memory": { "growthRatio": …, "gpuBytes": null, "power": {...} }
 }
 ```
