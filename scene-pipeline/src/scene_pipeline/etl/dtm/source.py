@@ -161,6 +161,14 @@ def download_source(url: str, dest: Path, *, timeout: float = DEFAULT_TIMEOUT_S)
     except OSError as exc:
         _discard(part)
         raise DtmSourceError(f"cannot write download of {url} to {part}: {exc}") from exc
+    except BaseException:
+        # Ctrl-C is not an OSError either, and this is the longest step of the
+        # run: a nationwide DTM is gigabytes, so an interrupt lands here more
+        # often than anywhere else. `_publish` grew the same clause; without it
+        # here the module keeps half a policy, and the `.part` this function
+        # promises never to leave behind is left behind, at full size.
+        _discard(part)
+        raise
 
     try:
         os.replace(part, dest)
