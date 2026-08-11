@@ -688,13 +688,27 @@ describe("a stored record that is JSON but not a record", () => {
     return { alerts, result, backing };
   };
 
+  // Each fixture is valid in EVERY respect except the one defect it names, so
+  // the clause under test is the only thing that can reject it.
+  //
+  // The first version of this table was not isolated: the entry-level fixtures
+  // also omitted establishedHash/establishedTilesetId, so they were rejected by
+  // the top-level clauses and the entry clauses never decided anything. Two
+  // mutants that deleted entry validation entirely survived the whole suite.
+  // The cases passed; they were not testing what they said.
+  const valid = { url: URL_UNDER_TEST, establishedHash: null, establishedTilesetId: null, observations: [], recent: [] };
   const shapes: [string, string][] = [
     ["an empty object", "{}"],
-    ["a record with no observations", JSON.stringify({ url: URL_UNDER_TEST, recent: [] })],
-    ["observations that are not an array", JSON.stringify({ url: URL_UNDER_TEST, observations: {}, recent: [] })],
-    ["an observation that is not an object", JSON.stringify({ url: URL_UNDER_TEST, observations: [null], recent: [] })],
-    ["an observation missing its count", JSON.stringify({ url: URL_UNDER_TEST, observations: [{ hash: "a", firstSeenAt: "t", lastSeenAt: "t" }], recent: [] })],
-    ["recent holding a non-string", JSON.stringify({ url: URL_UNDER_TEST, observations: [], recent: [1] })],
+    ["a record with no observations", JSON.stringify({ ...valid, observations: undefined })],
+    ["a record with no recent", JSON.stringify({ ...valid, recent: undefined })],
+    ["a url that is not a string", JSON.stringify({ ...valid, url: 7 })],
+    ["establishedHash of the wrong type", JSON.stringify({ ...valid, establishedHash: 7 })],
+    ["observations that are not an array", JSON.stringify({ ...valid, observations: {} })],
+    ["an observation that is not an object", JSON.stringify({ ...valid, observations: [null] })],
+    ["an observation missing its hash", JSON.stringify({ ...valid, observations: [{ firstSeenAt: "t", lastSeenAt: "t", count: 1 }] })],
+    ["an observation missing its count", JSON.stringify({ ...valid, observations: [{ hash: "a", firstSeenAt: "t", lastSeenAt: "t" }] })],
+    ["an observation whose count is not a number", JSON.stringify({ ...valid, observations: [{ hash: "a", firstSeenAt: "t", lastSeenAt: "t", count: "1" }] })],
+    ["recent holding a non-string", JSON.stringify({ ...valid, recent: [1] })],
     ["a JSON array", "[]"],
     ["a JSON string", '"nope"'],
   ];
