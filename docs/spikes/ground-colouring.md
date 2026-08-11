@@ -13,7 +13,7 @@
 > **Ticket**:FTP-69
 > **性質**:工程盡職調查(engineering due diligence),**非正式法律意見**。
 > **實測日期**:**2026-08-11**(UTC)。OSM 與線上服務皆為活資料,**本報告所有點值僅代表該日該次量測**。
-> **產物**:本報告 + 可重跑量測 script [`ground-probe.py`](ground-probe.py)(實驗用,不進正式模組;自我測試 [`ground-probe.selftest.py`](ground-probe.selftest.py),**57 案全綠、0 skip;CI 不跑它,見 §9.11**)
+> **產物**:本報告 + 可重跑量測 script [`ground-probe.py`](ground-probe.py)(實驗用,不進正式模組;自我測試 [`ground-probe.selftest.py`](ground-probe.selftest.py),**60 案全綠、0 skip;CI 不跑它,見 §9.11**)
 > **關聯**:FTP-39(現況:地面為 Cesium 預設橢球灰)、FTP-40、FTP-33、FTP-35、FTP-29、[FTP-6 授權裁定](../../LICENSING.md)、[FTP-5 NLSC 實測](nlsc.md)
 
 ## 查證清單(exam;declaration commit 凍結)
@@ -172,7 +172,7 @@ probe 的可用性取樣紀錄**只帶** `at` / `status` / `bytes` / `body_class
 
 ### 2.6 考卷與 mutation
 
-`ground-probe.selftest.py`:**57 案全綠、0 skip、0 fail**(合成幾何、合成 shapefile 與合成 Overpass payload,不打網路)。**「全綠」須連同 skip 數一起讀**(§9.12);**CI 不執行這份考卷**(§9.11)。
+`ground-probe.selftest.py`:**60 案全綠、0 skip、0 fail**(合成幾何、合成 shapefile 與合成 Overpass payload,不打網路)。**「全綠」須連同 skip 數一起讀**(§9.12);**CI 不執行這份考卷**(§9.11)。
 
 ```sh
 python docs/spikes/ground-probe.selftest.py
@@ -223,7 +223,11 @@ python docs/spikes/ground-probe.selftest.py
 | Overpass 與 Geofabrik extract 是否等價 | §5.1 | **未考慮** —— 見 §9.1 |
 | NLSC 腳印凸包近似的誤差 | §7.5 | **已接受殘餘** —— LOD1 為柱狀體,凹形建物略微高估 |
 
-**現況:Layer 2 的 12 個(12/12)+ round-2 新增程式的 6 個(6/6)+ round-4 的 5 個(5/5)+ round-5 的 6 個(6/6)+ round-6 的 8 個(8/8)+ 我自己的 15 個 = 52 個 mutant 全滅,57 案綠、0 skip、0 fail**(執行環境見 §9.12;**CI 不跑這份考卷,見 §9.11**)。
+**現況:考卷 60 案綠、0 skip、0 fail**(執行環境見 §9.12;**CI 不跑這份考卷,見 §9.11**)。
+
+**mutation 以「單次 harness 執行的自報結果」為準,不做跨輪加總**:最近一次為 **round-7 的 12 個,`12/12 killed, 0 survived, 0 unusable`**(§18.3),涵蓋 round-6 整組 + 本輪新增。歷來各輪:Layer 2 的 12(12/12)、round-2 新增程式的 6(6/6)、round-4 的 5(5/5)、round-5 的 6(6/6)、我自己的 15。
+
+> **round-7 更正**:先前這裡寫「累計 52 個 mutant 全滅」。**跨輪加總是我自己算的,不是任何一次 harness 的輸出** —— 而 round-6 那筆本身就不成立(harness 說 7/8,見 §17.4)。**一個沒有任何一次執行會印出來的數字,不該以「現況」的語氣出現在報告裡。**
 
 #### 每個守衛各自保證什麼(明確寫出範圍)
 
@@ -232,12 +236,16 @@ python docs/spikes/ground-probe.selftest.py
 | `test_every_documented_command_is_still_accepted_by_the_cli` | 報告裡每一條 `ground-probe` 指令的 argv **能被 parser 接受** | **不保證它跑得出報告裡的數字**,也不保證它的輸入存在 |
 | `test_every_input_a_documented_command_needs_is_documented_too` | 記載的指令所需的每個 `--osm/--highways/--buildings` 輸入,**都由 `OSM_FETCHES` 中某條記載的取得指令產生** | 不涵蓋 `--shp` / `--city-roads`(那兩者是 `curl` 下載,已附 URL 與 sha256,見 §4.2、§7.1);**單獨看它是單向的** —— 縮小「需要」永遠成立,故配下一列 |
 | `test_every_fetched_layer_is_consumed_by_a_documented_command` | **反方向**:`OSM_FETCHES` 抓的每一層,都被某條記載的指令消費 | 不保證那層**內容非空**(那是下一列的事) |
-| **`test_building_input_is_decided_by_the_computation_not_by_the_flag`** | **建物項確實進入了計算**:`building_input` 由 bbox 內的建物**面積**決定;為零時 envelope 與車道區間**一律扣住**,並在 stderr 出聲 | 不保證那些建物是**正確**的建物(NLSC vs OSM 的代理誤差是 §7.3 的事) |
+| **建物守衛**(`..._decided_by_the_computation_not_by_the_flag` + `..._remark_bearing_..._never_licenses_the_envelope` + `..._needs_area_not_merely_elements`) | **這一層不是空的、也不是殘缺的**:`building_input` 由 bbox 內建物**面積**決定(非旗標、非 element 數),且**帶 `remark` 的取得一律視為殘缺**;三者任一不成立時 envelope 與車道區間**扣住**並在 stderr 出聲 | **最大的缺口是「抓到的不完整卻無 `remark`」** —— Overpass 以外的截斷(檔案被截、手動編輯、未來版本不再發 `remark`)**不會被偵測**;其次才是 NLSC vs OSM 的代理誤差(§7.3,±17.6%) |
 | `test_a_documented_shaped_command_reproduces_a_known_number_end_to_end` | 一條**與記載同形**的指令,經 `main()` 到 **§7.4 實際發佈的 `envelope_frac`**,比對已知值(容差 1e-4),且 envelope 必須等於 `blank_envelope` 對該列自身分量的輸出 | **它跑的是合成 fixture,不是臺北資料**;涵蓋 3 個 source 與 city 規則,**但不含需要 `--tags` 的 drivable 規則** |
 
 > **round-6 更正**:上表 round-5 版本對最後一列**高估了自己** —— 它當時斷言的是 `true_blank_frac_of_bbox`(**§7.4 發佈的是 `envelope_frac`**),容差 ±0.02 對 0.4972 等於 **3.5% 的相對餘裕**(乘 1.03 的 mutant 存活),且只跑到 11 條規則中的 2 條、3 個 source 中的 1 條,**`blank_envelope`、車道修正、路面 credit 從未執行**。**而最該進這張表的那條守衛(建物項)當時根本不在表裡。**
 >
 > **一張「明寫邊界」的表,本身也需要被檢查** —— 和其他任何宣稱一樣。
+>
+> **round-7 更正(S9)**:本列 round-6 版本的保證欄寫「建物項**確實進入了計算**」,而它實際保證的只是「至少一棟面積為正的建物」—— **2/9,360 就滿足**。更糟的是不保證欄當時指向 NLSC/OSM 代理誤差(**±17.6%**),**而真正的缺口是不完整抓取(−99.98%)**。
+>
+> **它把注意力從大洞導向小洞。一張「明寫邊界」的表,若在不保證欄裡列的是次要風險,比沒有那一欄更糟** —— 讀者會以為主要風險已被涵蓋。**每一列現在都要通過一個問題:這一列不保證的東西裡,最大的那個有沒有被列出來?**
 
 **報告裡的臺北數字之可重現性,靠的是各節附的指令 + §4.2/§7.1 的 checksum + §5.1 的取得指令,不是靠考卷。** 這一句是 round-5 寫出來的:先前的守衛被(我自己)當成比它實際更強的東西。
 
@@ -828,7 +836,7 @@ python docs/spikes/ground-probe.py blank   --area contracts/constants/m1_area.js
 10. **邊緣帶為何比內部更滿,成因未判定**(§2.4)。
 11. **`docs/spikes/` 完全在所有 CI 閘門之外(S17,已開 FTP-71)。** 本目錄的 `.py` 既不跑 ruff 也不跑 pytest:`ci.yml` 的 Python job 只路由 `^scene-pipeline/`,而本 PR 是 docs-only。**本報告所有「N 案全綠」的宣稱,都是我在本機跑出來的,CI 從未執行過這份考卷。** 第三方要複核必須自己跑 `python docs/spikes/ground-probe.selftest.py`。
 
-12. **考卷的套件需求**:`shapely`、`pyproj` **缺任一即硬紅**(probe 匯入時就失敗);`pyshp` 缺會讓 2 個 shapefile 案例回報 `SKIP`。**`SKIP` 不計入通過,但 runner 仍 exit 0** —— 所以「全綠」必須連同 skip 數一起讀(runner 會印 `NOTE: a skip is missing coverage, not a pass.`)。本報告引用的 **57 案全綠、0 skip** 是在 shapely 2.1.1 / pyproj 3.6.1 / pyshp 2.3.1 下取得的。
+12. **考卷的套件需求**:`shapely`、`pyproj` **缺任一即硬紅**(probe 匯入時就失敗);`pyshp` 缺會讓 2 個 shapefile 案例回報 `SKIP`。**`SKIP` 不計入通過,但 runner 仍 exit 0** —— 所以「全綠」必須連同 skip 數一起讀(runner 會印 `NOTE: a skip is missing coverage, not a pass.`)。本報告引用的 **60 案全綠、0 skip** 是在 shapely 2.1.1 / pyproj 3.6.1 / pyshp 2.3.1 下取得的。
 
 13. **§7.3 三個 500 m 方格的選取規則未載明,因為沒有規則。** 它們是我挑的(一格含台北101周邊高密度、一格東南、一格西北),**不是隨機抽樣,也不是覆蓋全 bbox**;因此 0.824–1.150 這個跨度是**這三格的**跨度,不是 bbox 的信賴區間。
 
@@ -1057,6 +1065,8 @@ stderr: warning: the buildings file contributed no area inside the bbox and
 
 round-5 的判斷式是 `needed ⊆ written`,**縮小 `needed` 永遠成立** —— 把 §7.4 的 `--buildings` 刪掉,考卷 52/52 全綠。**擋得住「產的人不產了」,擋不住「要的人不要了」;而 B1 正是後者的極端版本(要了,只是要到一個空的)。** 已補反方向:**`OSM_FETCHES` 抓的每一層都必須被某條記載的指令消費**。
 
+**界限(round-7 更正)**:「某條」是字面意思 —— 只刪掉 §7.4 的 `--buildings`,考卷仍 **57/57 全綠**,因為 §16.4 的複核指令也帶著它;**要兩條都刪才會紅**。§2.6 表格寫「某條記載的指令」是誠實的,**是 §17.2 這段散文原本寫得比守衛強**。它擋的是「這一層在報告裡完全沒人用了」,不是「某一節漏掉了它」。
+
 ### 17.3 S6 —— 那張「明寫邊界」的表,自己高估了一列、漏了一列
 
 §2.6 的守衛表 round-5 版本:end-to-end 那列斷言的是 `true_blank_frac_of_bbox`(**§7.4 發佈的是 `envelope_frac`**);容差 ±0.02 對 0.4972 是 **3.5% 相對餘裕**(乘 1.03 存活);只跑 11 條規則中的 2 條、3 個 source 中的 1 條,**`blank_envelope`、車道修正、路面 credit 從未執行**;**而最該在表裡的建物守衛不在表裡**。
@@ -1072,9 +1082,66 @@ round-5 的判斷式是 `needed ⊆ written`,**縮小 `needed` 永遠成立** �
 | **S4** | §9.10a / §9.10b 指標不存在(§9 那份清單在 round-5 renumber 後是 11/12/13,指標沒跟著改)。已修 |
 | **S5** | round-5 的 declaration commit 新增 6 案、message 只承認 1 案 green-on-arrival(**旗艦那條 end-to-end 也是一開始就綠**)。本輪的 declaration commit **逐案宣告** green-on-arrival,並在同一系列附**兩態變異證據** |
 
-**本輪 mutation:8 個,8/8 全滅**(含每一條 green-on-arrival 案例各自的 mutant)。**累計 52 個 mutant 全滅,57 案綠、0 skip。**
+**本輪 mutation:8 個,其中 1 個(刪除 stderr 警告)第一次寫成語法無效、由一次獨立跑的合法替代 mutant 補上。**
+
+> **round-7 更正(S7)—— 這是證據紀錄不實,不是行為缺陷。** 我當時回報「8/8 全滅」,但 `mutB1/b1.py` 原封不動跑出來是 **`7/8 killed; survived: ['S2a stderr warning deleted']`、exit 1** —— 那個 mutant 把 `print(` 換成 `_unused = (`,尾巴的 `file=sys.stderr,` 讓它**根本不 parse**。**行為沒有問題**(語法正確的替代 mutant 確實被殺,見 §18),**問題是我回報了一個我的 harness 沒有回報的數字**。當時的「累計 52」同樣不成立。
+>
+> harness 已修:**不 parse 的 mutant 一律計為 `unusable`,絕不計入 killed**,且只有在 `survived` 與 `unusable` 皆為零時才 exit 0。**現行數字以 §18 的單一次 harness 執行為準。**
 
 **另**:reviewer 點名的那批靜態分析警告經判定為**誤報**並附證明(行號與真實使用處固定差 106 行 = fixture 區塊長度,該次分析跑的是寫 fixture 之前的快照);**我未據此改動任何程式**。
+
+## 18. round-7 更正紀錄(fix1 review 第二輪)
+
+**round-6 的 B1 是真的修好了**:同一份逾時 payload 現在 `empty` / `feats 0` / envelope 不發佈 / stderr 210 B,而**同輸入 + 新程式的 24 列逐位元組相同**(只多一個鍵)。本輪是**同一軸再推一格的更窄變體**。
+
+### 18.1 B2 —— 門檻是「非零就算數」,而能分辨的訊號我已經算出來又丟掉
+
+reviewer 把真實的 9,360-element 檔截成逾時形狀:
+
+| 輸入 | `building_input` | feats | stderr | B(實測路面) |
+|---|---|---|---|---|
+| 逾時 0 elements | `empty` | 0 | 210 B | **扣住** |
+| **逾時 2 elements** | **`present`** | 2 | **0 B** | **36.19–37.14%** |
+| 逾時 200 elements | `present` | 200 | 0 B | 35.37–36.55% |
+| 完整 9,360 | `present` | 9,360 | 0 B | 22.80–27.49% |
+
+**0.02% 的資料就讓 envelope 重新發佈**,結果與 `[verify-fail]` 相同到 0.01 pp。
+
+**而同一份 JSON 裡就寫著 `"building_source_remark": true`。** 我**已經讀了 `remark`、判斷過、把它寫進報告 —— 然後照樣發佈受它影響的數字**。
+
+> **能分辨的訊號不是缺的,是被算出來之後沒有被用。** 一個猜錯的門檻是判斷失誤;**一個算出來卻不用的訊號,是在輸出裡留下自己失效的證據而不作為。**
+
+**修法(兩層,`remark` 是精確訊號,不必猜門檻)**:
+
+1. **取得層**:`fetch_overpass` 遇到帶 `remark` 的 200 **不再存檔**,該次嘗試記為 `remark: true` 並換下一個 mirror。否則 `osm` 會寫出截斷檔、印 `status: 200`、exit 0,**使用者連「抓取失敗了」都不會知道**,要等到下一條指令扣住數字才發現 —— 晚了一個指令。
+2. **消費層**:`building_input` 先看 `remark`(→ `incomplete`),再看面積(→ `empty`/`present`)。
+
+**實測(同一份真實檔案截斷後)**:
+
+```text
+truncated 2   -> building_input=incomplete  feats=2    envelope 發佈? False  stderr=212B
+truncated 200 -> building_input=incomplete  feats=200  envelope 發佈? False  stderr=214B
+```
+
+### 18.2 S9 —— 同一張表,第六次高估(這次在「不保證」欄)
+
+§2.6 建物那一列的保證欄寫「建物項**確實進入了計算**」,實際保證的只是「至少一棟面積為正的建物」;而**不保證欄指向 NLSC/OSM 代理誤差(±17.6%),不是真正的缺口(不完整抓取,−99.98%)**。
+
+> **它把注意力從大洞導向小洞。** 一張「明寫邊界」的表,若在不保證欄裡列的是**次要**風險,**比沒有那一欄更糟** —— 讀者會以為主要風險已被涵蓋。
+
+已改寫,並定下一條檢查規則:**每一列都要通過「這一列不保證的東西裡,最大的那個有沒有被列出來?」** 該列現在把「Overpass 以外的截斷不會被偵測」列為最大缺口,代理誤差降為其次。
+
+### 18.3 其餘
+
+| # | 內容 |
+|---|---|
+| **S7** | **證據紀錄不實**:round-6 回報 8/8,harness 實際輸出 7/8(1 個 mutant 不 parse)。已於 §17.4 更正,並修 harness:**不 parse 一律計為 `unusable`,絕不計入 killed**;只有 survived 與 unusable 皆為零才 exit 0 |
+| **S8** | 只刪 §7.4 的 `--buildings` → 57/57 全綠(§16.4 替它撐著)。**§2.6 表格寫「某條」是誠實的,是 §17.2 的散文高估**;已於 §17.2 補上界限 |
+| **S10** | end-to-end 的「接線」對兩個輸入是**同義反覆**(把 range 從自身輸出讀回再餵回去),故 `proxy → 1.0/1.0` 與 `non_lane_hi → 0.0` 兩個 mutant 存活 —— **正是 §7.5 三個具名維度中的第二、三個**。改為對**常數**斷言(fixture 路面 1000 m²、非車道 250/290 → `[0.25, 0.29]`;代理 `[0.824, 1.150]`) |
+| **S11** | 「由面積決定」沒被釘住(改用 `building_features > 0` 存活),因為所有建物 fixture 都在 bbox 內。已加一個**有 element、但幾何完全在 bbox 外**的 fixture |
+| 靜態分析 | `_TO_WGS` 改為 module-level(與 `ground-probe.py` 自己的 `_TO_3826` 同慣例);`_run_blank` 在 `blank` 未輸出 JSON 時以具名斷言失敗,而非稍後 `TypeError` |
+
+**本輪 mutation:12 個,`12/12 killed, 0 survived, 0 unusable`,harness exit 0。** 該次執行涵蓋 round-6 的整組(S1/S2a/S2b/S3/S6a/S6b)加上本輪新增的 B2a/B2b/B2c/S10a/S10b/S11,**所以 §17.4 那個不成立的數字現在由這一次執行取代**。考卷 **60 案綠、0 skip、0 fail**。
 
 ---
 

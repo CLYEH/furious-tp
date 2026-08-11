@@ -25,6 +25,7 @@ import importlib.util
 import sys
 from pathlib import Path
 
+from pyproj import Transformer
 from shapely.geometry import Polygon as Poly
 
 PROBE = Path(__file__).with_name("ground-probe.py")
@@ -752,6 +753,13 @@ def _fixture_area_file():
 _FIX_E0, _FIX_N0 = 305500.0, 2767500.0
 
 
+#: Module-level, mirroring `ground-probe.py`'s own `_TO_3826`. The first
+#: version lazily initialised through `global` + `try/except NameError`, which
+#: is correct but reads as an unbound name to a static analyser — and matching
+#: the probe's existing convention costs nothing.
+_TO_WGS = Transformer.from_crs("EPSG:3826", "EPSG:4326", always_xy=True)
+
+
 def _ll_offset(east_m, north_m):
     """Exact EPSG:3826 -> WGS84, so a fixture's area is the area we intend.
 
@@ -761,16 +769,7 @@ def _ll_offset(east_m, north_m):
     multiplied the answer by 1.03 to survive (S6). Projecting properly costs
     nothing and lets the tolerance be tight enough to mean something.
     """
-    from pyproj import Transformer
-
-    global _TO_WGS
-    try:
-        transformer = _TO_WGS
-    except NameError:
-        transformer = _TO_WGS = Transformer.from_crs(
-            "EPSG:3826", "EPSG:4326", always_xy=True
-        )
-    return transformer.transform(_FIX_E0 + east_m, _FIX_N0 + north_m)
+    return _TO_WGS.transform(_FIX_E0 + east_m, _FIX_N0 + north_m)
 
 
 def _fixture_osm_areas():
@@ -1275,6 +1274,9 @@ def _run_blank(extra_args):
     except SystemExit as exc:
         code = exc.code
     text = out.getvalue()
+    assert text.strip() or code not in (0, None), (
+        f"blank exited {code} without writing any JSON; stderr={err.getvalue()!r}"
+    )
     payload = _json.loads(text) if text.strip() else None
     return code, payload, err.getvalue()
 
@@ -1382,11 +1384,20 @@ def test_fetch_overpass_does_not_bank_a_remark_as_a_successful_fetch():
             self.content = body
 
     class _Session:
-        def __init__(self, bodies):
-            self.bodies = list(bodies)
+        """Every mirror answers with the same remark-bearing body.
+
+        A first draft returned the remark once and a clean body after, so the
+        second mirror legitimately saved — which is correct behaviour, and
+        made the case test the opposite of what it claims.
+        """
+
+        def __init__(self, body):
+            self.body = body
+            self.calls = 0
 
         def post(self, url, **kwargs):
-            return _Resp(self.bodies.pop(0) if self.bodies else b"{}")
+            self.calls += 1
+            return _Resp(self.body)
 
     remark_body = _json.dumps(
         {"version": 0.6, "remark": "runtime error: Query timed out", "elements": []}
@@ -1394,13 +1405,11 @@ def test_fetch_overpass_does_not_bank_a_remark_as_a_successful_fetch():
 
     with tempfile.TemporaryDirectory() as tmp:
         target = Path(tmp) / "out.json"
+        session = _Session(remark_body)
         record = gp.fetch_overpass(
-            "[out:json];out;",
-            target,
-            session=_Session([remark_body]),
-            attempts=1,
-            backoff=0,
+            "[out:json];out;", target, session=session, attempts=1, backoff=0
         )
+        assert session.calls == len(gp.OVERPASS_URLS), session.calls
         assert not target.exists(), "a remark-bearing body was written to disk"
     assert not record.get("saved"), record
     assert any(a.get("remark") for a in record["attempts"]), record

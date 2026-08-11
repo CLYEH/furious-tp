@@ -527,6 +527,20 @@ OSM_FETCHES = {
 }
 
 
+def _has_remark(payload: bytes) -> bool:
+    """Does an Overpass JSON body carry a `remark`?
+
+    `remark` is how Overpass says "this answer is not the answer you asked
+    for" — timeout, out of memory, partial result — while still returning 200.
+    It is an EXACT signal, so nothing here has to guess a completeness
+    threshold. The body is parsed, never restated (§2.5).
+    """
+    try:
+        return bool(json.loads(payload.decode("utf-8")).get("remark"))
+    except Exception:  # noqa: BLE001 — an unparseable body is handled elsewhere
+        return False
+
+
 def fetch_overpass(
     query: str, out_path: Path, session=None, timeout=300, attempts=4, backoff=45.0
 ) -> dict:
@@ -570,6 +584,14 @@ def fetch_overpass(
             }
             log.append(record)
             if response.status_code == 200 and record["body_class"] == "json_like":
+                # Overpass reports a failed or partial query as HTTP 200 with a
+                # `remark`, so status alone cannot say the fetch worked. Banking
+                # it would write a truncated layer, print `status: 200` and exit
+                # 0 — the user would not learn the fetch failed until a later
+                # command withheld its figures, one command too late.
+                if _has_remark(payload):
+                    record["remark"] = True
+                    continue
                 out_path.parent.mkdir(parents=True, exist_ok=True)
                 out_path.write_bytes(payload)
                 return {"saved": str(out_path), "attempts": log}
@@ -1214,10 +1236,21 @@ def cmd_blank(args) -> int:
         building_features = len(built.geoms)
         if built.geoms:
             buildings = unary_union(built.geoms).intersection(clip)
-        # The test is the AREA, not the flag and not even the element count: a
-        # file of buildings that all fall outside the bbox contributes nothing
-        # to this measurement and must not license the envelope either.
-        building_input = "present" if buildings.area > 0 else "empty"
+        # Two tests, and the remark comes FIRST because it is exact.
+        #
+        # An area threshold cannot separate "the layer arrived" from "2 of
+        # 9,360 buildings arrived before the query timed out": 0.02% of the
+        # layer has positive area and reproduces the verify-fail numbers to
+        # 0.01 pp. `remark` says outright that the answer is not the answer
+        # that was asked for — and this code was already computing it, writing
+        # `building_source_remark` into the same JSON whose envelope the remark
+        # invalidates, and then publishing anyway. A signal computed and not
+        # acted on is worse than one never computed: it leaves the proof of the
+        # output's invalidity inside the output.
+        if building_remark:
+            building_input = "incomplete"
+        else:
+            building_input = "present" if buildings.area > 0 else "empty"
 
     city = []
     if args.city_roads:
@@ -1280,9 +1313,10 @@ def cmd_blank(args) -> int:
     if building_input != "present":
         reason = {
             "absent": "--buildings was not given",
-            "empty": (
-                "the buildings file contributed no area inside the bbox"
-                + (" and carries an Overpass remark" if building_remark else "")
+            "empty": "the buildings file contributed no area inside the bbox",
+            "incomplete": (
+                f"the buildings file carries an Overpass remark, so its "
+                f"{building_features} feature(s) are a partial answer"
             ),
         }[building_input]
         print(
