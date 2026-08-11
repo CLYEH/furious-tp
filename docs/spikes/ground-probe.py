@@ -23,10 +23,13 @@ Discipline, enforced by `ground-probe.selftest.py`:
 
 Sub-commands
 ------------
-  osm       fetch M1-bbox landuse/natural/leisure/waterway + highways (Overpass)
+  osm       fetch every layer in OSM_FETCHES for the area (Overpass)
   measure   measure a saved fetch: coverage, classes, holes, edges, two methods
-  zoning    measure a local land-use-zoning file (GeoJSON) the same way
+  blank     true-blank sensitivity across corridor rules, with the envelope
   avail     availability sampling of a tile/imagery endpoint
+
+`measure` also reads shapefiles (`--source shp`), which is how candidate A is
+measured through exactly the same geometry code as candidate B.
 """
 
 from __future__ import annotations
@@ -493,6 +496,37 @@ def highway_query(south, west, north, east) -> str:
     return f'[out:json][timeout:180];\n(\n  way["highway"]({bbox});\n);\nout geom;\n'
 
 
+def building_query(south, west, north, east) -> str:
+    """Building footprints, relations included.
+
+    Large buildings are routinely multipolygon relations, and this layer
+    carries the whole §7.5 building term.
+    """
+    bbox = f"{south},{west},{north},{east}"
+    return (
+        "[out:json][timeout:180];\n(\n"
+        f'  way["building"]({bbox});\n'
+        f'  relation["building"]({bbox});\n'
+        ");\nout geom;\n"
+    )
+
+
+#: The ONE place naming the layers this report is measured from and the file
+#: each is written to. `cmd_osm` iterates it and the exam reads it, so a layer
+#: cannot be consumed by a documented command without also being fetched by one.
+#:
+#: It exists because `osm-buildings.json` was consumed by §7.4 and produced by
+#: nothing: `blank` read the absent file as "no buildings" and published an
+#: envelope 9.7-13.4 pp away from the report's, at exit 0 with an empty stderr.
+#: Four review rounds missed it because every reviewer recomputed with their own
+#: fetcher; the first person to run the documented commands found it at once.
+OSM_FETCHES = {
+    "areas": {"filename": "osm-areas.json", "query": overpass_query},
+    "highways": {"filename": "osm-highways.json", "query": highway_query},
+    "buildings": {"filename": "osm-buildings.json", "query": building_query},
+}
+
+
 def fetch_overpass(
     query: str, out_path: Path, session=None, timeout=300, attempts=4, backoff=45.0
 ) -> dict:
@@ -933,13 +967,12 @@ def cmd_osm(args) -> int:
         "wgs84_bbox": [south, west, north, east],
         "epsg3826_bbox": [bbox.e_min, bbox.n_min, bbox.e_max, bbox.n_max],
     }
-    record["areas"] = fetch_overpass(
-        overpass_query(south, west, north, east), out / "osm-areas.json"
-    )
-    time.sleep(args.delay)
-    record["highways"] = fetch_overpass(
-        highway_query(south, west, north, east), out / "osm-highways.json"
-    )
+    for index, (name, spec) in enumerate(OSM_FETCHES.items()):
+        if index:
+            time.sleep(args.delay)  # courtesy pause between Overpass queries
+        record[name] = fetch_overpass(
+            spec["query"](south, west, north, east), out / spec["filename"]
+        )
     print(json.dumps(record, ensure_ascii=False, indent=2))
     return 0
 
@@ -1156,7 +1189,12 @@ def cmd_blank(args) -> int:
     all_lines = highways_by_class(hw_payload)
     drv_lines = highways_by_class(hw_payload, set(drivable)) if drivable else {}
 
+    # The envelope's building term is a PROXY for the NLSC tiles, and it moves
+    # candidate B by 9.7-13.4 pp. Absent input is therefore a MISSING INPUT, not
+    # "no buildings": every figure that depends on it is withheld and the rows
+    # are stamped, so a run without it can never be mistaken for a run with it.
     buildings = Polygon()
+    building_input = "present" if args.buildings else "absent"
     if args.buildings:
         payload = json.loads(Path(args.buildings).read_text(encoding="utf-8"))
         feats, _ = features_from_overpass(
@@ -1217,6 +1255,13 @@ def cmd_blank(args) -> int:
     else:
         non_lane_hi = non_lane_lo = 0.0
     report["non_carriageway_share_range"] = [non_lane_lo, non_lane_hi]
+    report["building_input"] = building_input
+    if building_input == "absent":
+        print(
+            "warning: --buildings not given; envelope figures are withheld "
+            "(fetch it with `osm --area ... --out ...`)",
+            file=sys.stderr,
+        )
 
     # The building proxy's span is MEASURED, and it is not symmetric: NLSC to
     # OSM footprint ratios came out 0.824 .. 1.150, i.e. -17.6% / +15.0%. Using
@@ -1238,6 +1283,18 @@ def cmd_blank(args) -> int:
                 round((row["true_blank_m2"] + non_lane_lo * credited) / bbox.area_m2, 6),
                 round((row["true_blank_m2"] + non_lane_hi * credited) / bbox.area_m2, 6),
             ]
+            row["building_input"] = building_input
+            if building_input == "absent":
+                # No envelope, and no carriageway range either: both fold in the
+                # building term. Publishing them here is exactly the silent
+                # second answer this guard exists to prevent.
+                row.pop("carriageway_adjusted_frac_range", None)
+                row["withheld"] = (
+                    "envelope needs --buildings; see OSM_FETCHES['buildings']"
+                )
+                row.update({"source": name, "rule": rule_name})
+                report["results"].append(row)
+                continue
             low, high = blank_envelope(
                 row["true_blank_m2"],
                 credited,

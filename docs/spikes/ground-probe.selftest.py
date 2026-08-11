@@ -1070,6 +1070,44 @@ def test_osm_fetch_covers_every_layer_the_report_measures():
     assert "relation" in building_query, "multipolygon buildings must be fetched too"
 
 
+def test_osm_command_actually_fetches_every_layer_in_the_table():
+    """The table being complete is not the same as the command using it.
+
+    `test_osm_fetch_covers_every_layer_the_report_measures` asserts on
+    OSM_FETCHES; a `cmd_osm` that iterated only the first entry passed it
+    untouched (mutation F5). This drives the command with the network stubbed
+    out and checks which files it asked for.
+    """
+    import contextlib
+    import io
+    import tempfile
+
+    requested = []
+
+    def fake_fetch(query, out_path, **kwargs):
+        requested.append(Path(out_path).name)
+        return {"saved": str(out_path), "attempts": []}
+
+    real_fetch = gp.fetch_overpass
+    gp.fetch_overpass = fake_fetch
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            with contextlib.redirect_stdout(io.StringIO()):
+                gp.main(
+                    [
+                        "osm",
+                        "--area", str(_fixture_area_file()),
+                        "--out", tmp,
+                        "--delay", "0",
+                    ]
+                )
+    finally:
+        gp.fetch_overpass = real_fetch
+
+    expected = {spec["filename"] for spec in gp.OSM_FETCHES.values()}
+    assert set(requested) == expected, (requested, expected)
+
+
 def test_blank_refuses_to_publish_an_envelope_without_the_building_input():
     """Missing proxy input must be loud, not a silently different answer.
 
