@@ -8,10 +8,11 @@
   },
   "scripts": {
     "build": "vite build",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
-    "lint": "eslint src e2e",
-    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p bench/tsconfig.json --noEmit",
+    "lint": "eslint src e2e bench",
+    "test": "vitest run && vitest run --config bench/vitest.config.ts",
     "e2e": "playwright test",
+    "bench": "node bench/run.ts",
     "serve:site": "node scripts/serve-site.mjs"
   },
   "devDependencies": {

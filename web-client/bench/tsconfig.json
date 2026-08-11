@@ -1,0 +1,18 @@
+{
+  // bench/ is its own TS project because the root tsconfig's `include` is
+  // ["src", "e2e"] and FTP-48's scope does not reach that file. Without this
+  // project the harness would ship untypechecked, which is worse than adding a
+  // second project: `npm run typecheck` covers both (see package.json).
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    // `..` is web-client/ — bench/page imports the real scene from ../../src,
+    // so the project root has to contain both.
+    "rootDir": "..",
+    // The harness runs under `node bench/run.ts` (Node 24 strips types), and
+    // Node resolves the path it is given: imports inside bench/ carry the real
+    // `.ts` extension rather than the `.js` NodeNext convention src/ uses.
+    "allowImportingTsExtensions": true,
+    "noEmit": true
+  },
+  "include": ["."]
+}
