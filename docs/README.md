@@ -11,6 +11,7 @@
 ## 支援範圍
 
 - [BROWSERS.md](BROWSERS.md) — 瀏覽器/裝置支援矩陣(Chrome 主測)
+- [`web-client/bench/RIG.md`](../web-client/bench/RIG.md) — bench reference rig 規格、量測條件與開跑前檢查(RFC D6;效能判定所依據的機器)
 
 ## 調查(spikes)
 
