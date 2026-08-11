@@ -34,11 +34,11 @@ jobs:
           set -o pipefail
 
           # --- routing ------------------------------------------------------
-          # route(): reads the changed-file list on stdin and prints the job
-          # set for that diff as "gates=<bool> docs=<bool> python=<bool>".
-          # The self-test below and the real decision go through this ONE
-          # function — the table cannot pass while the decision differs.
-          # docs-only detection stays in .github/profile.sh (unchanged).
+          # route(): reads the changed-file list on stdin, prints the job set
+          # as "gates=<bool> docs=<bool> python=<bool>". The self-test and the
+          # real decision both go through this ONE function, so the table
+          # cannot pass while the decision differs. docs-only detection stays
+          # in .github/profile.sh (unchanged).
           route() {
             changed="$(cat)"
             docs_only="$(printf '%s\n' "$changed" | sh .github/profile.sh)"
@@ -69,13 +69,11 @@ jobs:
           }
 
           # --- changed-file acquisition -------------------------------------
-          # How the file list is READ, one layer upstream of route(): a seam of
-          # its own, because the routing table hands route() strings and is
-          # blind to this layer. git escapes non-ASCII paths and wraps them in
-          # double quotes unless core.quotePath is off (FTP-53 B1); rename
-          # detection is the same defect one flag over (FTP-57 B2), collapsing
-          # a rename to its destination alone. Both flags make the list say
-          # what changed, not what it now looks like.
+          # How the file list is READ, one layer upstream of route(). git
+          # escapes non-ASCII paths and quotes them unless core.quotePath is
+          # off (FTP-53 B1); rename detection is the same defect one flag over
+          # (FTP-57 B2), collapsing a rename to its destination alone. Both
+          # flags make the list say what changed, not what it looks like now.
           changed_files() {
             git -c core.quotePath=false diff --name-only --no-renames "$1...$2" | refuse_quoted
           }
@@ -117,7 +115,7 @@ jobs:
           exam_fail=0
           # expect <name> <changed files, space-separated> <expected job set>.
           # Space-separated only because no case needs a path with a space;
-          # the real decision below feeds git's output to route() untouched.
+          # the real decision feeds git's output to route() untouched.
           expect() {
             got="$(printf '%s' "$2" | tr ' ' '\n' | route)"
             if [ "$got" = "$3" ]; then
@@ -153,6 +151,12 @@ jobs:
           expect "a diff larger than one pipe buffer still routes markdown" \
             "$(awk 'BEGIN{for(i=1;i<=4000;i++)printf "contracts/d%06d.md ",i}')contracts/spec/grid.schema.json" \
             "gates=true docs=true python=false"
+          # The other call site, same buffer: scene-pipeline/ first, so its
+          # grep matches at line 1 and only python is dropped. Reverting one
+          # call site is invisible to the case above (found by mutation).
+          expect "a diff larger than one pipe buffer still routes Python" \
+            "scene-pipeline/src/x.py $(awk 'BEGIN{for(i=1;i<=4000;i++)printf "web-client/src/c%06d.ts ",i}')web-client/src/z.ts" \
+            "gates=true docs=false python=true"
 
           # boundary
           expect "empty diff routes to no reduced profile" \
@@ -182,9 +186,8 @@ jobs:
           expect "nested scene-pipeline path is not the pipeline" \
             "docs/scene-pipeline/notes.md" \
             "gates=false docs=true python=false"
-          # Same trap as above but on a non-docs path, so the docs-only guard
-          # cannot mask an unanchored match. Added after mutation testing:
-          # dropping the ^ anchor survived the table without this case.
+          # Same trap on a non-docs path, so the docs-only guard cannot mask an
+          # unanchored match. From mutation: dropping ^ survived without it.
           expect "nested scene-pipeline path outside docs is not the pipeline" \
             "web-client/src/scene-pipeline/x.ts" \
             "gates=true docs=false python=false"
@@ -193,13 +196,11 @@ jobs:
             "gates=true docs=false python=false"
 
           # --- exam: changed-file acquisition -------------------------------
-          # The table above feeds route() strings, so it cannot see a defect in
-          # HOW the list is read — exactly where one lived (review B1): a
-          # quoted "docs/\350\250\255...md" misses ^docs/, ^scene-pipeline/ and
-          # \.md$ at once, and every miss falls towards "do not run" — the
-          # silent green this ticket exists to kill. Pinning that in the table
-          # would assert route() un-escapes paths: wrong contract, wrong place.
-          # These cases drive the real changed_files() against a real repo.
+          # The table feeds route() strings, so it cannot see HOW the list is
+          # read — where B1 lived, and every miss there falls towards "do not
+          # run", the silent green this ticket exists to kill. Pinning it in
+          # the table would assert route() un-escapes paths: wrong contract,
+          # wrong place. These cases drive changed_files() at a real repo.
           acq="$(mktemp -d)"
           (
             cd "$acq"
@@ -310,12 +311,11 @@ jobs:
             "REFUSED"
 
           # --- exam: workflow wiring ----------------------------------------
-          # Everything above proves the decision; none of it can see the YAML
-          # that carries it to the jobs. The fail-open regression caught in
-          # review (S1) lived entirely in the `if:` strings, and a typo in the
-          # `outputs:` block would skip all three jobs while profile stayed
-          # green. So the file is read back and asserted mechanically, with
-          # patterns escaped so the assertion lines cannot satisfy themselves.
+          # Everything above proves the decision; none of it sees the YAML that
+          # carries it to the jobs. S1's fail-open regression lived entirely in
+          # the `if:` strings, and a typo in `outputs:` would skip all three
+          # jobs while profile stayed green. So the file is read back and
+          # asserted mechanically, patterns escaped so no line satisfies itself.
           wiring() {
             # wiring <name> <expected match count> <ERE over ci.yml>
             n="$(grep -cE "$3" .github/workflows/ci.yml || true)"
@@ -391,14 +391,9 @@ jobs:
             '^ *- run: ruff check \.$'
           job_wiring "the python job actually runs pytest" python 1 \
             '^ *- run: pytest$'
-          job_wiring "the gates job actually runs lint" gates 1 \
-            '^ *- run: npm run lint$'
-          job_wiring "the gates job actually runs typecheck" gates 1 \
-            '^ *- run: npm run typecheck$'
-          job_wiring "the gates job actually runs build" gates 1 \
-            '^ *- run: npm run build$'
-          job_wiring "the gates job actually runs the tests" gates 1 \
-            '^ *- run: npm run test$'
+          for c in lint typecheck build test; do
+            job_wiring "the gates job actually runs $c" gates 1 "^ *- run: npm run $c\$"
+          done
           job_wiring "the docs job actually runs markdownlint" docs 1 \
             'markdownlint-cli2'
           job_wiring "the docs job actually runs the link check" docs 1 \
