@@ -73,6 +73,20 @@ def test_class_areas_split_the_overlap_without_inventing_area():
     assert sum(per_class.values()) > gp.coverage([a, b], BBOX).covered_m2
 
 
+def test_a_class_cannot_inflate_itself_by_mapping_the_same_ground_twice():
+    """Two overlapping features of the SAME class union to 4375, not 5000.
+
+    The case above cannot see this: with one feature per class, summing and
+    unioning agree, and a per-feature sum survives it untouched (mutation M12).
+    Double-mapped ground is normal in OSM — a park inside a park boundary —
+    so a class total that adds the overlap twice would overstate real land.
+    """
+    a = gp.feature("leisure", "park", square(0, 0, 50, 50))
+    b = gp.feature("leisure", "park", square(25, 25, 75, 75))
+    per_class = gp.class_areas([a, b], BBOX)
+    assert abs(per_class["leisure=park"] - 4375.0) < 1e-6, per_class
+
+
 # --- boundary --------------------------------------------------------------
 
 
@@ -136,6 +150,25 @@ def test_an_inner_ring_is_a_hole_not_coverage():
     assert len(found) == 1 and abs(found[0].area_m2 - 400.0) < 1e-6, found
 
 
+def test_edge_band_separates_the_rim_from_the_middle():
+    """The rim number and the interior number must come from different sets.
+
+    This is the measurement the report leans on to say clipping leaves no
+    blank rim, and it had no case at all until a mutant that computed the
+    interior fraction from the band survived (M14). It carries its own zero
+    control: the same function, one input where the rim must read 0 and one
+    where it must read 1.
+    """
+    inner_only = gp.feature("landuse", "residential", square(20, 20, 80, 80))
+    rim = gp.edge_band([inner_only], BBOX, width_m=10.0)
+    assert rim["band_fraction"] == 0.0, rim
+    assert rim["interior_fraction"] > 0.5, rim
+
+    full = gp.feature("landuse", "residential", square(0, 0, 100, 100))
+    painted = gp.edge_band([full], BBOX, width_m=10.0)
+    assert abs(painted["band_fraction"] - 1.0) < 1e-6, painted
+
+
 # --- the independent second method ----------------------------------------
 
 
@@ -153,6 +186,20 @@ def test_grid_sampling_agrees_with_the_exact_union():
     exact = gp.coverage(features, BBOX).fraction
     sampled = gp.grid_coverage(features, BBOX, step_m=0.5).fraction
     assert abs(exact - sampled) < 0.01, (exact, sampled)
+
+
+def test_grid_sampling_tests_containment_not_the_bounding_box():
+    """A right triangle covers half its own bounding box, and the grid must say so.
+
+    Every other grid case uses axis-aligned rectangles, where a polygon and its
+    bounding box are the same set — so a sampler that tested only the bounding
+    box passed all of them (mutation M9 survived on squares alone). A triangle
+    separates the two: bounding-box logic reports ~1.0 here, containment ~0.5.
+    """
+    triangle = gp.feature("landuse", "residential", [(0, 0), (100, 0), (0, 100), (0, 0)])
+    sampled = gp.grid_coverage([triangle], BBOX, step_m=0.5).fraction
+    assert abs(sampled - 0.5) < 0.02, sampled
+    assert abs(gp.coverage([triangle], BBOX).fraction - 0.5) < 1e-9
 
 
 def test_grid_sampling_can_disagree_when_the_exact_answer_moves():
@@ -244,6 +291,32 @@ def test_sampler_records_no_body():
     assert "e7f1a9" not in serialised
     # and not smuggled in as hex / base64 of the same bytes
     assert marker.hex() not in serialised
+
+
+def test_sample_records_carry_only_allow_listed_keys():
+    """Non-disclosure by allow-list, not by searching for one known marker.
+
+    Searching for the marker only catches a leak of the WHOLE body: a field
+    holding the first 16 bytes as hex passed `test_sampler_records_no_body`
+    untouched (mutation M13), and a 16-byte prefix of somebody else's response
+    is still somebody else's response. Pinning the key set means any new field
+    has to be argued for here before it can carry anything out.
+    """
+    session = FakeSession([FakeResponse(200, b"payload-bytes", {"Content-Type": "image/jpeg"})])
+    report = gp.sample_availability(
+        "https://example.invalid/tile", samples=1, session=session, delay_s=0
+    )
+    allowed = {"at", "status", "bytes", "body_class", "content_type", "ms"}
+    assert set(report["samples"][0]) <= allowed, set(report["samples"][0]) - allowed
+
+    failing = FakeSession([RuntimeError("boom")])
+    errored = gp.sample_availability(
+        "https://example.invalid/tile", samples=1, session=failing, delay_s=0
+    )
+    allowed_error = {"at", "status", "error_class", "ms"}
+    assert set(errored["samples"][0]) <= allowed_error, (
+        set(errored["samples"][0]) - allowed_error
+    )
 
 
 def test_sampler_counts_nul_bodies_as_a_class_not_a_success():
