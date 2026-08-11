@@ -26,11 +26,19 @@
  *   1. REPHRASING. It matches declared wordings. The original incident was
  *      itself a rephrasing: "7%-55%" only joined the list after the verifier
  *      found it, never before.
- *   2. THREE OF THE FOUR SURFACES. The scan walks bench/ only. That same claim
- *      also lived in the PR body, in gpuload.ts and in the handoff — and a
- *      squash merge turns the PR body into a permanent commit message.
+ *   2. TWO OF THE FOUR SURFACES. The scan walks bench/, which DOES include
+ *      gpuload.ts and every other source file — a retracted fragment
+ *      reintroduced in a code comment IS caught. What it cannot reach is the
+ *      PR body and the handoff, and a squash merge turns the PR body into a
+ *      permanent commit message.
  *   3. A NEW CLAIM OF THE SAME KIND. Four named retractions are forbidden; a
  *      fifth qualifier on some other verdict is outside it by construction.
+ *   4. A SEPARATOR THIS FILE HAS NOT ENUMERATED. The disclaimer exemption
+ *      works by splitting text into clauses, and that separator list is
+ *      enumerated by hand over an open set — full-width parentheses, tabs and
+ *      HTML comment markers were each added only after review found an escape
+ *      through them. The same openness as class 1, one level down: class 1 is
+ *      an open set of WORDINGS, this is an open set of PUNCTUATION.
  *
  * The `required` half is the stronger one, because it compares whole statements
  * against declared constants instead of hunting for words someone thought of.
@@ -104,7 +112,13 @@ function clauses(text: string): string[] {
   // one 203, and the em-dash — is its main clause separator at 59 occurrences.
   // Colons, markdown table pipes and bold markers separate too. Guessing a
   // document's punctuation is the same mistake as guessing its wording.
-  return text.split(/[。！？；,、:：|\n;]+|—+|\*\*|\.(?=\s|$)/);
+  // Parentheses hold asides, so a negation inside one must not exempt the
+  // claim outside it: "本路線是近空場景基線(不是我說的)" escaped on exactly that.
+  // 「」 is deliberately NOT a separator: it WRAPS the term being negated, and
+  // splitting on it would turn the legitimate "它不是「近空場景基線」" into a
+  // violation. Wrappers and separators are not the same thing — and this list
+  // is enumerated by hand over an open set (see class 4 in the header).
+  return text.split(/[。！？；,、:：|()（）\t\n;]+|—+|\*\*|<!--|-->|\.(?=\s|$)/);
 }
 
 export function assertsClaim(line: string, fragment: string): boolean {
@@ -248,6 +262,29 @@ describe("assertsClaim tells an assertion from a disclaimer", () => {
     expect(assertsClaim("This is NOT a 近空場景基線", "近空場景基線")).toBe(false);
   });
 
+  it("is not disarmed by a negation inside a parenthetical aside", () => {
+    // Named in review and previously neither fixed nor deferred. The claim is
+    // asserted outside the parentheses and something else denied inside them.
+    expect(assertsClaim("本路線是近空場景基線(不是我說的)", "近空場景基線")).toBe(true);
+    // Both widths: this repo writes half-width, but a paste can carry either.
+    expect(assertsClaim("本路線是近空場景基線（不是我說的）", "近空場景基線")).toBe(true);
+  });
+
+  it("is not disarmed by a negation inside an HTML comment or across a tab", () => {
+    // Both were added as separators after review found escapes through them.
+    // An added separator with no case is an unasserted addition — the same
+    // shape as every other finding on this ticket.
+    expect(assertsClaim("<!-- 不是我說的 --> 本路線是近空場景基線", "近空場景基線")).toBe(true);
+    expect(assertsClaim("不是我說的	本路線是近空場景基線", "近空場景基線")).toBe(true);
+  });
+
+  it("still exempts a disclaimer that WRAPS the term in quotes", () => {
+    // 「」 is deliberately not a separator: it wraps the term being negated
+    // rather than separating clauses, so splitting on it would turn this
+    // correction into a violation.
+    expect(assertsClaim("它不是「近空場景基線」,不得如此閱讀。", "近空場景基線")).toBe(false);
+  });
+
   it("keeps decimals intact so numeric fragments stay matchable", () => {
     // Splitting on every "." would turn "5.10 ms" into "5" and "10 ms", and the
     // fragment would never match again — a guard that silently stops guarding.
@@ -308,6 +345,15 @@ describe("required disclosures are in the deliverable, not only in the PR", () =
   const AC1B_VERDICT = "### AC1b「同版本重跑兩次 p95 差 < 1 ms」:**未達**";
   const COVERAGE_SCOPE =
     "### ⚠ 考卷到不了的範圍:**`src/driver.ts` 與 `page/main.ts` 整個檔案**";
+  const BASELINE_WARNING =
+    "> **跨 run 的 p95 漂移,目前不能拿來當 FTP-49 的回歸基線。** " +
+    "同版本四次之間就已經出現 21.84% 的位移,而「p95 劣化 10% 即 fail」會把它讀成程式碼回歸。";
+  const MEMORY_HEADING = "### 記憶體:本專案第一次量到成長(路線 `xinyi-dense`)";
+  const MEMORY_ROUTE_LINE = "路線 xinyi-dense,15 分鐘記憶體循環";
+  const MEMORY_GROWTH = "126.6 MB → 510.5 MB    +303.21%    歷時 15.3 分鐘,樣本數 3";
+  const WARM_COLD_OBSERVATION =
+    "同一次跑、同樣是 **`xinyi-dense`** 的另一個觀察:**warm 的 p95(687.90)比 cold(664.70)慢**" +
+    " —— 與「NLSC 服務禁止快取其 tileset」相符,「熱」並沒有讓場景變快。";
 
   it("states the AC1b verdict verbatim, and states it exactly once", () => {
     const lines = readme.split(/\r?\n/);
@@ -323,10 +369,12 @@ describe("required disclosures are in the deliverable, not only in the PR", () =
     expect(readme).toMatch(/沒有任何限定條件|無任何限定條件/);
   });
 
-  it("records, exactly once, that cross-run drift cannot be a regression baseline", () => {
-    const statements = statementsAbout(readme, /回歸基線/);
-    expect(statements).toHaveLength(1);
-    expect(statements[0]).toContain("不能拿來當 FTP-49 的回歸基線");
+  it("carries the baseline warning verbatim, and carries it once", () => {
+    // `toContain` allowed a qualifier to be appended to the END of this
+    // warning and stay green — this ticket's signature failure, walking out
+    // through one of the two disclosures that had not been given a constant.
+    expect(readme.split(/\r?\n/)).toContain(BASELINE_WARNING);
+    expect(statementsAbout(readme, /回歸基線/)).toEqual([BASELINE_WARNING]);
   });
 
   it("carries the coverage scope verbatim, naming both files", () => {
@@ -337,14 +385,28 @@ describe("required disclosures are in the deliverable, not only in the PR", () =
     expect(statementsAbout(readme, /考卷到不了/)).toHaveLength(1);
   });
 
-  it("records the first measured memory growth, its route, and its caveat", () => {
-    const growth = statementsAbout(readme, /303\.21/);
-    expect(growth).toHaveLength(1);
-    // RIG.md's rule: a number must be traceable to the conditions that made it.
-    // Four offroad-south p95 values sit directly above these, so the route has
-    // to be on the number itself.
-    expect(readme).toMatch(/xinyi-dense/);
-    expect(readme).toMatch(/3 個樣本|三個樣本/);
+  it("attaches the route to the memory figures themselves", () => {
+    /**
+     * RIG.md's rule: a number must be traceable to the conditions that produced
+     * it, and the route is one of those conditions — four offroad-south p95
+     * values sit directly above these.
+     *
+     * The previous assertion was `expect(readme).toMatch(/xinyi-dense/)`, a
+     * whole-document search. `xinyi-dense` occurs seven times in this file
+     * (command examples, the speed table, the route table), so relabelling the
+     * memory block `offroad-south` left it green. That is review's own S2
+     * finding from round 1 of this PR, resurrected verbatim — while the comment
+     * directly above the assertion said the route must be attached to the
+     * number. Correct prose, an assertion that could not enforce it.
+     */
+    const lines = readme.split(/\r?\n/);
+    expect(lines).toContain(MEMORY_HEADING);
+    expect(lines).toContain(MEMORY_ROUTE_LINE);
+    expect(lines).toContain(MEMORY_GROWTH);
+    expect(lines).toContain(WARM_COLD_OBSERVATION);
+    // Stated once each, so a second unlabelled copy cannot appear beside them.
+    expect(statementsAbout(readme, /303\.21/)).toEqual([MEMORY_GROWTH]);
+    expect(statementsAbout(readme, /687\.90/)).toEqual([WARM_COLD_OBSERVATION]);
   });
 });
 
