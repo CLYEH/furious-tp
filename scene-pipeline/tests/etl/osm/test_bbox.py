@@ -305,6 +305,61 @@ def test_cut_is_snapped_not_merely_interpolated() -> None:
     assert runs[0].points[0][0] == bbox.e_min
 
 
+@pytest.mark.parametrize(
+    ("edge", "p", "q", "axis", "naive"),
+    [
+        # Each polyline is a witness for exactly ONE edge: the naive value below
+        # is what `p + t * d` returns for that crossing, and it is exact on the
+        # other three. So one case per edge is the minimum, not padding.
+        (
+            "e_min",
+            (-24500933.51382203, 2769600.0),
+            (20284809.476359554, 2769600.0),
+            0,
+            307000.0000000037,
+        ),
+        (
+            "n_min",
+            (307200.0, -22038933.51382203),
+            (307200.0, 22746809.476359554),
+            1,
+            2769000.0000000037,
+        ),
+        (
+            "n_max",
+            (307200.0, -22037933.51382203),
+            (307200.0, 22747809.476359554),
+            1,
+            2770000.0000000037,
+        ),
+    ],
+)
+def test_every_edge_pins_its_own_axis_exactly(edge, p, q, axis, naive) -> None:
+    # Found by a third mutation pass. `test_cut_is_snapped_not_merely_
+    # interpolated` above is a witness for ONE of the four pins — e_max — and
+    # deleting any of the other three left the whole exam green, because on
+    # every other input in it `p + t * d` happens to land on the boundary
+    # constant anyway. "The crossed axis is exact" was therefore proven for a
+    # quarter of the rule.
+    #
+    # Each case below is the same idea aimed at a different edge: a span wide
+    # enough that the division and the multiplication do not cancel, so the
+    # naive value misses the constant by ~4e-9 m. Small — and the point is that
+    # size is irrelevant. grid.md §接縫規則 clause 1 asks for bit equality on a
+    # shared boundary vertex; a value that is 4e-9 m away is not equal, and the
+    # tile stage that consumes these coordinates keys on them.
+    bbox = BBox(e_min=307000.0, n_min=2769000.0, e_max=307500.0, n_max=2770000.0)
+    boundary = getattr(bbox, edge)
+
+    assert naive != boundary  # the witness really does distinguish the two
+
+    runs = clip_polyline([p, q], bbox)
+    assert len(runs) == 1
+    values = {point[axis] for point in runs[0].points}
+    assert boundary in values, f"{edge} was interpolated, not pinned"
+    assert naive not in values
+
+
 def test_uncut_endpoint_is_handed_back_verbatim_not_recomputed() -> None:
     # The sibling of the case above, found by a second mutation pass: deleting
     # the `t == 1.0 -> return q` passthrough in `_snap` also survived the exam,
