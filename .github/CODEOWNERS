@@ -4,5 +4,7 @@
 # (contracts/) are deliberately excluded — gated by their own flow.
 /CLAUDE.md @CLYEH
 /.github/workflows/ @CLYEH
+/.github/*.sh @CLYEH
+/.github/*.mjs @CLYEH
 /.github/CODEOWNERS @CLYEH
 /DESIGN.md @CLYEH
