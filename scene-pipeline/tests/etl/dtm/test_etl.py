@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -317,7 +318,69 @@ def test_no_output_is_produced_without_attribution(aligned_source, tmp_path):
     assert not out.parent.exists() or list(out.parent.iterdir()) == []
 
 
+def test_attribution_is_settled_before_a_single_byte_is_downloaded(tmp_path, monkeypatch):
+    """The order of the checks is itself a promise, so it is pinned here.
+
+    `run_dtm_etl` validates attribution before it fetches anything, and both
+    the module README and `source.py` say so. Nothing else notices if that
+    call slides below the download: the run still fails, with the same error,
+    on the same input — after spending a multi-gigabyte transfer of the
+    nationwide DTM to learn something that was knowable from the arguments.
+    A stub that fails the test when called is the only way to see it.
+    """
+    import requests
+
+    calls = []
+
+    def refuse(*args, **kwargs):
+        calls.append(kwargs.get("url", args[0] if args else None))
+        raise AssertionError("the download started before attribution was checked")
+
+    monkeypatch.setattr(requests, "get", refuse)
+    with pytest.raises(DtmSourceMetadataError, match="license"):
+        run_dtm_etl(
+            source="https://example.invalid/dtm_20m.tif",
+            out=tmp_path / "out" / "dtm.tif",
+            source_overrides={"name": "20 m DTM", "retrieved": "2026-08-01"},
+            download_dir=tmp_path / "dl",
+        )
+    assert calls == []
+    assert not (tmp_path / "dl").exists()
+
+
 # ------------------------------------------------- publishing / partial state
+
+# Two runs whose records differ in every field that matters, so a record left
+# describing the wrong raster is unmistakable rather than a subtle diff.
+V1_ATTRIBUTION = {
+    "name": "PUBLISHED-v1",
+    "url": "https://example.invalid/dtm/v1.tif",
+    "license": "CC-BY-4.0",
+    "retrieved": "2026-08-01",
+}
+V2_ATTRIBUTION = {
+    "name": "ATTEMPTED-v2",
+    "url": "https://example.invalid/dtm/v2.tif",
+    "license": "ODbL-1.0",
+    "retrieved": "2026-08-10",
+}
+
+
+def replace_failing_at(target):
+    """`os.replace` that fails for one destination and really works for the rest.
+
+    Failing *every* replace cannot tell the two publish steps apart, and the
+    interesting states of this ETL are exactly the ones where one step landed
+    and the other did not.
+    """
+    real = os.replace
+
+    def _replace(src, dst):
+        if Path(dst) == Path(target):
+            raise PermissionError(13, "the file is open in another process", str(dst))
+        return real(src, dst)
+
+    return _replace
 
 
 def test_a_failure_while_publishing_leaves_nothing_behind(aligned_source, tmp_path,
@@ -334,7 +397,151 @@ def test_a_failure_while_publishing_leaves_nothing_behind(aligned_source, tmp_pa
     with pytest.raises(DtmOutputError):
         run_dtm_etl(source=aligned_source, out=out, source_overrides=attribution)
     assert not out.exists()
+    assert not (out.parent / "dtm_20m_epsg3826.source.json").exists()
     assert list(out.parent.glob("*.tmp")) == []
+
+
+def test_a_failed_first_publish_leaves_no_orphan_record(aligned_source, tmp_path,
+                                                        attribution, monkeypatch):
+    """"Nothing behind" has to include the record, and only this can see it.
+
+    When the record lands and the raster does not, the run leaves a source
+    record for a GeoTIFF that does not exist. The test above misses it because
+    it fails both replaces, so the record never reaches its final path either.
+    """
+    out = tmp_path / "out" / "dtm.tif"
+    record_path = out.parent / "dtm.source.json"
+
+    monkeypatch.setattr(os, "replace", replace_failing_at(out))
+    with pytest.raises(DtmOutputError):
+        run_dtm_etl(source=aligned_source, out=out, source_overrides=attribution)
+
+    assert not out.exists()
+    assert not record_path.exists()
+    assert list(out.parent.glob("*.tmp")) == []
+
+
+def test_a_failed_publish_leaves_the_previous_record_byte_identical(tmp_path, aligned_source,
+                                                                    source_array, monkeypatch):
+    """A failed run must not falsify the record of the run that succeeded.
+
+    The record is placed before the raster, so when the raster's replace fails
+    the disk holds v1's GeoTIFF beside a record describing v2: different name,
+    url, licence, sha256, valid_fraction. Every one of those is wrong about
+    the file sitting next to it, and nothing about the record looks unusual —
+    which is precisely why it is dangerous. Attribution mechanised (AC4, PRD
+    §4) is worth nothing if a failed publish can rewrite it in place.
+
+    Byte identity, not field-by-field: the whole record must be the one that
+    was published, including the fields nobody thought to assert on.
+    """
+    out = tmp_path / "out" / "dtm.tif"
+    record_path = out.parent / "dtm.source.json"
+    run_dtm_etl(source=aligned_source, out=out, source_overrides=V1_ATTRIBUTION)
+    published_record = record_path.read_bytes()
+    published_raster, _ = read_band(out)
+
+    v2 = write_raster(tmp_path / "src" / "v2.tif", source_array + 50.0,
+                      west=SOURCE_WEST, north=SOURCE_NORTH)
+    monkeypatch.setattr(os, "replace", replace_failing_at(out))
+    with pytest.raises(DtmOutputError):
+        run_dtm_etl(source=v2, out=out, source_overrides=V2_ATTRIBUTION)
+
+    assert record_path.read_bytes() == published_record
+    np.testing.assert_array_equal(read_band(out)[0], published_raster)
+    assert list(out.parent.glob("*.tmp")) == []
+
+
+@pytest.mark.skipif(os.name != "nt", reason="POSIX rename replaces an open file happily; "
+                                            "holding the raster open only blocks os.replace "
+                                            "on Windows")
+def test_a_downstream_reader_holding_the_raster_cannot_falsify_the_record(tmp_path,
+                                                                          aligned_source,
+                                                                          source_array):
+    """The same guarantee, under the real failure mode instead of an injected one.
+
+    A downstream stage reading the published `dtm.tif` while the ETL re-runs is
+    the reason temp-then-replace exists here, and on Windows an open handle
+    makes `os.replace` fail for real: no monkeypatch, the OS refuses. If the
+    record can be falsified by anything, it is by this.
+    """
+    out = tmp_path / "out" / "dtm.tif"
+    record_path = out.parent / "dtm.source.json"
+    run_dtm_etl(source=aligned_source, out=out, source_overrides=V1_ATTRIBUTION)
+    published_record = record_path.read_bytes()
+    published_raster, _ = read_band(out)
+
+    v2 = write_raster(tmp_path / "src" / "v2.tif", source_array + 50.0,
+                      west=SOURCE_WEST, north=SOURCE_NORTH)
+    with open(out, "rb") as downstream_reader:
+        assert downstream_reader.read(4) == b"II*\x00"  # a real reader, mid-read
+        with pytest.raises(DtmOutputError):
+            run_dtm_etl(source=v2, out=out, source_overrides=V2_ATTRIBUTION)
+        assert record_path.read_bytes() == published_record
+
+    np.testing.assert_array_equal(read_band(out)[0], published_raster)
+    assert list(out.parent.glob("*.tmp")) == []
+
+
+def test_a_new_raster_is_never_published_beside_the_old_record(tmp_path, aligned_source,
+                                                               source_array, monkeypatch):
+    """The publish order is load-bearing, so it is pinned rather than asserted in prose.
+
+    `_publish` places the record first "so a published GeoTIFF always has one".
+    Swap the two replaces and a failure in the second ships v2's elevations
+    under v1's licence, url and sha256 — a raster whose record is not merely
+    missing but wrong, and wrong in the direction that says "we are allowed to
+    redistribute this".
+    """
+    out = tmp_path / "out" / "dtm.tif"
+    record_path = out.parent / "dtm.source.json"
+    run_dtm_etl(source=aligned_source, out=out, source_overrides=V1_ATTRIBUTION)
+    published_record = record_path.read_bytes()
+    published_raster, _ = read_band(out)
+
+    v2 = write_raster(tmp_path / "src" / "v2.tif", source_array + 50.0,
+                      west=SOURCE_WEST, north=SOURCE_NORTH)
+    monkeypatch.setattr(os, "replace", replace_failing_at(record_path))
+    with pytest.raises(DtmOutputError):
+        run_dtm_etl(source=v2, out=out, source_overrides=V2_ATTRIBUTION)
+
+    np.testing.assert_array_equal(read_band(out)[0], published_raster)
+    assert record_path.read_bytes() == published_record
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    assert record["source"]["license"] == V1_ATTRIBUTION["license"]
+    assert list(out.parent.glob("*.tmp")) == []
+
+
+def test_a_record_that_cannot_be_put_back_is_named_in_the_error(tmp_path, aligned_source,
+                                                                source_array, monkeypatch):
+    """When the guarantee degrades, it degrades out loud.
+
+    Restoring the previous record can itself fail — the same open handle that
+    blocked the raster can block the record. The one thing that must not happen
+    then is silence: the operator has to be told, in the error they already
+    get, that the record on disk now describes a raster that was never
+    published. An unreported falsified record is the whole hazard, arriving
+    through the code meant to prevent it.
+    """
+    out = tmp_path / "out" / "dtm.tif"
+    record_path = out.parent / "dtm.source.json"
+    run_dtm_etl(source=aligned_source, out=out, source_overrides=V1_ATTRIBUTION)
+
+    v2 = write_raster(tmp_path / "src" / "v2.tif", source_array + 50.0,
+                      west=SOURCE_WEST, north=SOURCE_NORTH)
+
+    def unwritable(self, data):
+        raise PermissionError(13, "the record is open in another process", str(self))
+
+    monkeypatch.setattr(os, "replace", replace_failing_at(out))
+    monkeypatch.setattr(Path, "write_bytes", unwritable)
+    with pytest.raises(DtmOutputError) as excinfo:
+        run_dtm_etl(source=v2, out=out, source_overrides=V2_ATTRIBUTION)
+
+    message = str(excinfo.value)
+    assert str(record_path) in message
+    assert "could not be put back" in message
+    assert "never published" in message
 
 
 def test_a_failed_republish_leaves_the_previous_output_intact(tmp_path, aligned_source,

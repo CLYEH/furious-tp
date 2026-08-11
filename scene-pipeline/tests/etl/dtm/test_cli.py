@@ -189,9 +189,26 @@ def test_a_download_failure_is_reported_without_a_traceback(tmp_path, attributio
     assert "Traceback" not in err
 
 
-def test_the_module_is_runnable_with_dash_m():
-    """AC1 says "single command": prove the entry point exists as advertised."""
-    completed = subprocess.run([sys.executable, "-m", "scene_pipeline.etl.dtm", "--help"],
-                               capture_output=True, text=True)
-    assert completed.returncode == 0
-    assert "--source" in completed.stdout
+def test_the_dash_m_command_produces_both_artefacts_in_a_real_subprocess(tmp_path,
+                                                                         aligned_source,
+                                                                         attribution):
+    """AC1 says "single command", so run the command the README prints.
+
+    Every other case here calls `main(argv)` in-process, which cannot see the
+    things a subprocess can: a broken `__main__` guard, an import that only
+    resolves because pytest put `tests/` on the path, a contracts lookup that
+    depends on the working directory. This one used to run `--help` only,
+    which proved the module imports and nothing about the ETL.
+    """
+    out = tmp_path / "out" / "dtm_20m_epsg3826.tif"
+    completed = subprocess.run(
+        [sys.executable, "-m", "scene_pipeline.etl.dtm",
+         "--source", str(aligned_source), "--out", str(out), *attribution_argv(attribution)],
+        capture_output=True, text=True, cwd=tmp_path,
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert out.exists()
+    record = json.loads((out.parent / "dtm_20m_epsg3826.source.json").read_text(encoding="utf-8"))
+    assert record["source"]["license"] == attribution["license"]
+    with rasterio.open(out) as ds:
+        assert (ds.width, ds.height) == (175, 175)
