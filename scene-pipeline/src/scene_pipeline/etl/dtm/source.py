@@ -175,6 +175,14 @@ def download_source(url: str, dest: Path, *, timeout: float = DEFAULT_TIMEOUT_S)
     except OSError as exc:
         _discard(part)
         raise DtmSourceError(f"cannot move downloaded {url} into place at {dest}: {exc}") from exc
+    except BaseException:
+        # `_publish` keeps both of its renames under one such clause; this
+        # function's rename is in a try of its own, so it needs its own or the
+        # policy stops one statement short of the end. An interrupt landing
+        # here abandons the completed download — the whole file, one rename
+        # from being the one that was wanted.
+        _discard(part)
+        raise
     return dest
 
 
