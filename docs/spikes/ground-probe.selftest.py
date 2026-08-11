@@ -25,6 +25,7 @@ import importlib.util
 import sys
 from pathlib import Path
 
+from pyproj import Transformer
 from shapely.geometry import Polygon as Poly
 
 PROBE = Path(__file__).with_name("ground-probe.py")
@@ -719,6 +720,133 @@ def _fixture_road_shapefile():
     )
 
 
+#: Temp dir holding the JSON fixtures the end-to-end cases drive `main()` with.
+_JSON_FIXTURES = []
+
+
+def _fixture_dir():
+    import tempfile
+
+    if not _JSON_FIXTURES:
+        tmp = tempfile.TemporaryDirectory()
+        _JSON_FIXTURES.append(tmp)
+    return Path(_JSON_FIXTURES[0].name)
+
+
+def _write_json(name, payload):
+    import json as _json
+
+    path = _fixture_dir() / name
+    path.write_text(_json.dumps(payload), encoding="utf-8")
+    return path
+
+
+def _fixture_area_file():
+    """A 100 x 100 m area file in the shape `BBox.from_area_file` expects."""
+    return _write_json(
+        "area.json",
+        {"bbox": {"e_min": 305500, "n_min": 2767500, "e_max": 305600, "n_max": 2767600}},
+    )
+
+
+#: The fixture bbox in EPSG:3826, matching `_fixture_area_file`.
+_FIX_E0, _FIX_N0 = 305500.0, 2767500.0
+
+
+#: Module-level, mirroring `ground-probe.py`'s own `_TO_3826`. The first
+#: version lazily initialised through `global` + `try/except NameError`, which
+#: is correct but reads as an unbound name to a static analyser — and matching
+#: the probe's existing convention costs nothing.
+_TO_WGS = Transformer.from_crs("EPSG:3826", "EPSG:4326", always_xy=True)
+
+
+def _ll_offset(east_m, north_m):
+    """Exact EPSG:3826 -> WGS84, so a fixture's area is the area we intend.
+
+    The first version approximated degrees per metre, which put a "half the
+    bbox" polygon at 0.4972 instead of 0.5 — and that 0.6% slop then justified
+    a +/-0.02 tolerance in the end-to-end case, wide enough for a mutant that
+    multiplied the answer by 1.03 to survive (S6). Projecting properly costs
+    nothing and lets the tolerance be tight enough to mean something.
+    """
+    return _TO_WGS.transform(_FIX_E0 + east_m, _FIX_N0 + north_m)
+
+
+def _fixture_osm_areas():
+    """One landuse polygon covering the southern half of the fixture bbox."""
+    ring = [
+        _ll_offset(-20, -20),
+        _ll_offset(120, -20),
+        _ll_offset(120, 50),
+        _ll_offset(-20, 50),
+        _ll_offset(-20, -20),
+    ]
+    return _write_json(
+        "osm-areas.json",
+        {
+            "elements": [
+                {
+                    "type": "way",
+                    "id": 1,
+                    "tags": {"landuse": "residential"},
+                    "geometry": [{"lon": lon, "lat": lat} for lon, lat in ring],
+                }
+            ]
+        },
+    )
+
+
+def _fixture_osm_highways():
+    """A highway far outside the fixture bbox: a corridor that covers nothing."""
+    return _write_json(
+        "osm-highways.json",
+        {
+            "elements": [
+                {
+                    "type": "way",
+                    "id": 2,
+                    "tags": {"highway": "residential"},
+                    "geometry": [
+                        {"lon": lon, "lat": lat}
+                        for lon, lat in (_ll_offset(5000, 5000), _ll_offset(5100, 5000))
+                    ],
+                }
+            ]
+        },
+    )
+
+
+def _fixture_osm_buildings():
+    """A real building INSIDE the bbox, under already-painted ground.
+
+    Inside matters: `building_input` is now decided by the area that reaches
+    the computation, so a fixture whose buildings all fall outside the bbox is
+    — correctly — indistinguishable from an empty file. Placing it in the
+    landuse-covered southern half keeps the blank fraction at exactly 0.5 while
+    still licensing the envelope.
+    """
+    ring = [
+        _ll_offset(70, 10),
+        _ll_offset(90, 10),
+        _ll_offset(90, 30),
+        _ll_offset(70, 30),
+        _ll_offset(70, 10),
+    ]
+    return _write_json(
+        "osm-buildings.json",
+        {
+            "elements": [
+                {
+                    "type": "way",
+                    "id": 3,
+                    "tags": {"building": "yes"},
+                    "geometry": [{"lon": lon, "lat": lat} for lon, lat in ring],
+                }
+            ]
+        },
+    )
+
+
 def test_city_road_reader_keeps_every_ring_of_a_multi_ring_shape():
     """Two disjoint rings in one shape are two polygons, not one.
 
@@ -903,6 +1031,583 @@ def test_the_documented_command_check_can_actually_fail():
         except SystemExit:
             return
     raise AssertionError("the parser accepted a flag that does not exist")
+
+
+# --- fix1: the command -> number link, which nothing was checking ------------
+#
+# The round-4 guard pins "argv is accepted by the parser". It is a real guard —
+# pushed four ways, it goes red four ways. But the invariant it pins is not the
+# invariant AC2 needs, and the gap let a defect through that no reviewer hit:
+# every Layer 2 round recomputed with its own fetcher, so nobody ever walked
+# the documented path. A verifier did, and §7.4's numbers moved by 9.7-13.4 pp
+# because `osm-buildings.json` is required by a documented command and produced
+# by none of them.
+#
+# The family boundary is the guarantee boundary — fourth occurrence, this time
+# on the link between a command and the number it is said to produce.
+
+
+def _documented_output_paths():
+    """Files the report's own commands WRITE (`--out` directories aside)."""
+    produced = set()
+    for tokens in _documented_invocations():
+        for i, token in enumerate(tokens):
+            if token == "--out" and i + 1 < len(tokens):
+                produced.add(tokens[i + 1])
+    return produced
+
+
+def test_every_input_a_documented_command_needs_is_documented_too():
+    """A documented command may only consume what a documented command makes.
+
+    This is the invariant AC2 actually needs: "every number carries the command
+    that produced it" is worthless if that command needs an input no command
+    creates. `--buildings <osm-buildings.json>` appears in §7.4; nothing in the
+    report ever wrote that file, and `blank` treated its absence as "no
+    buildings" rather than as a missing input.
+    """
+    fetched = gp.OSM_FETCHES  # name -> output file written by `osm`
+    written = {spec["filename"] for spec in fetched.values()}
+    needed = set()
+    for tokens in _documented_invocations():
+        for i, token in enumerate(tokens):
+            if token in ("--osm", "--highways", "--buildings") and i + 1 < len(tokens):
+                needed.add(Path(tokens[i + 1].strip("<>")).name)
+    missing = {n for n in needed if n not in written}
+    assert not missing, (
+        f"documented commands consume {sorted(missing)}, "
+        f"but the documented fetch only writes {sorted(written)}"
+    )
+
+
+def test_osm_fetch_covers_every_layer_the_report_measures():
+    """`osm` must fetch areas, highways AND buildings.
+
+    Buildings carry the whole §7.5 building term; fetching two of three layers
+    is what made the third silently default to empty.
+    """
+    assert set(gp.OSM_FETCHES) == {"areas", "highways", "buildings"}, gp.OSM_FETCHES
+    building_query = gp.OSM_FETCHES["buildings"]["query"](25.0, 121.5, 25.1, 121.6)
+    assert '"building"' in building_query, building_query
+    assert "relation" in building_query, "multipolygon buildings must be fetched too"
+
+
+def test_osm_command_actually_fetches_every_layer_in_the_table():
+    """The table being complete is not the same as the command using it.
+
+    `test_osm_fetch_covers_every_layer_the_report_measures` asserts on
+    OSM_FETCHES; a `cmd_osm` that iterated only the first entry passed it
+    untouched (mutation F5). This drives the command with the network stubbed
+    out and checks which files it asked for.
+    """
+    import contextlib
+    import io
+    import tempfile
+
+    requested = []
+
+    def fake_fetch(query, out_path, **kwargs):
+        requested.append(Path(out_path).name)
+        return {"saved": str(out_path), "attempts": []}
+
+    real_fetch = gp.fetch_overpass
+    gp.fetch_overpass = fake_fetch
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            with contextlib.redirect_stdout(io.StringIO()):
+                gp.main(
+                    [
+                        "osm",
+                        "--area", str(_fixture_area_file()),
+                        "--out", tmp,
+                        "--delay", "0",
+                    ]
+                )
+    finally:
+        gp.fetch_overpass = real_fetch
+
+    expected = {spec["filename"] for spec in gp.OSM_FETCHES.values()}
+    assert set(requested) == expected, (requested, expected)
+
+
+def test_blank_refuses_to_publish_an_envelope_without_the_building_input():
+    """Missing proxy input must be loud, not a silently different answer.
+
+    Run without `--buildings`, `blank` used to exit 0 with an empty stderr and
+    an envelope that looked exactly like the real one — B's band read 29.3-37.1%
+    where the report says 16.2-27.5%. A missing input must either stop the run
+    or mark the affected figures, never quietly produce a second set of numbers
+    wearing the first set's label.
+    """
+    import contextlib
+    import io
+    import json as _json
+
+    out = io.StringIO()
+    err = io.StringIO()
+    argv = [
+        "blank",
+        "--area", str(_fixture_area_file()),
+        "--osm", str(_fixture_osm_areas()),
+        "--highways", str(_fixture_osm_highways()),
+    ]
+    code = None
+    try:
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = gp.main(argv)
+    except SystemExit as exc:
+        code = exc.code
+
+    if code not in (0, None):
+        assert "building" in err.getvalue().lower(), err.getvalue()
+        return
+
+    payload = _json.loads(out.getvalue())
+    for row in payload["results"]:
+        assert "envelope_frac" not in row, (
+            "an envelope was published without the building input it depends on"
+        )
+        assert row.get("building_input") == "absent", row
+
+
+def test_blank_publishes_the_envelope_when_the_building_input_is_present():
+    """Control for the case above: with the input, the envelope IS published."""
+    import contextlib
+    import io
+    import json as _json
+
+    out = io.StringIO()
+    argv = [
+        "blank",
+        "--area", str(_fixture_area_file()),
+        "--osm", str(_fixture_osm_areas()),
+        "--highways", str(_fixture_osm_highways()),
+        "--buildings", str(_fixture_osm_buildings()),
+    ]
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+        gp.main(argv)
+    payload = _json.loads(out.getvalue())
+    assert payload["results"], payload
+    for row in payload["results"]:
+        assert "envelope_frac" in row, row
+        assert row.get("building_input") == "present", row
+
+
+def _fixture_city_roads():
+    """A surveyed road strip inside the bbox but under already-painted ground.
+
+    It has to intersect the clip or the city rules never appear; it sits in the
+    landuse-covered southern half so it brings the carriageway machinery and
+    the surveyed-road credit into the run without moving the blank fraction,
+    which keeps the end-to-end expectation hand-computable.
+    """
+    ring = [
+        [
+            (_FIX_E0 + 10, _FIX_N0 + 10),
+            (_FIX_E0 + 60, _FIX_N0 + 10),
+            (_FIX_E0 + 60, _FIX_N0 + 30),
+            (_FIX_E0 + 10, _FIX_N0 + 30),
+            (_FIX_E0 + 10, _FIX_N0 + 10),
+        ]
+    ]
+    return _write_shapefile(
+        "city-roads",
+        [ring],
+        fields=gp.NON_CARRIAGEWAY_COLUMNS,
+        records=[(200.0, 50.0, 30.0, 10.0)],
+    )
+
+
+def _fixture_zoning():
+    """A zoning polygon covering the fixture bbox's western half."""
+    ring = [
+        [
+            (_FIX_E0, _FIX_N0),
+            (_FIX_E0 + 50, _FIX_N0),
+            (_FIX_E0 + 50, _FIX_N0 + 100),
+            (_FIX_E0, _FIX_N0 + 100),
+            (_FIX_E0, _FIX_N0),
+        ]
+    ]
+    return _write_shapefile(
+        "zoning", [ring], fields=("ZONE",), records=[(3.0,)]
+    )
+
+
+def _fixture_osm_buildings_timed_out():
+    """What Overpass returns when a query times out: 200, valid JSON, no data.
+
+    `remark` plus an empty `elements` array. `fetch_overpass` accepts any 200
+    with a json-like body, so this lands on disk as a successful fetch — and
+    buildings is the heaviest of the three layers, so it is the one that times
+    out.
+    """
+    return _write_json(
+        "osm-buildings-timeout.json",
+        {
+            "version": 0.6,
+            "generator": "Overpass API",
+            "remark": "runtime error: Query timed out",
+            "elements": [],
+        },
+    )
+
+
+def _run_blank(extra_args):
+    """Drive `blank` through `main()` and return (exit code, payload, stderr)."""
+    import contextlib
+    import io
+    import json as _json
+
+    out, err = io.StringIO(), io.StringIO()
+    argv = [
+        "blank",
+        "--area", str(_fixture_area_file()),
+        "--osm", str(_fixture_osm_areas()),
+        "--highways", str(_fixture_osm_highways()),
+        *extra_args,
+    ]
+    code = None
+    try:
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = gp.main(argv)
+    except SystemExit as exc:
+        code = exc.code
+    text = out.getvalue()
+    assert text.strip() or code not in (0, None), (
+        f"blank exited {code} without writing any JSON; stderr={err.getvalue()!r}"
+    )
+    payload = _json.loads(text) if text.strip() else None
+    return code, payload, err.getvalue()
+
+
+def test_building_input_is_decided_by_the_computation_not_by_the_flag():
+    """A file that contributes nothing is not a present input.
+
+    `building_input` was set from whether `--buildings` appeared in argv, so a
+    timed-out Overpass response — 200, valid JSON, zero elements — was stamped
+    `present` while `buildings_m2` sat at 0.0, and the run reproduced the
+    verify-fail numbers exactly. The label made the wrong answer MORE credible
+    than the unlabelled version had been.
+
+    A field that describes the input must be decided by what reached the
+    computation, never by the command line.
+    """
+    code, payload, err = _run_blank(
+        ["--buildings", str(_fixture_osm_buildings_timed_out())]
+    )
+    if code not in (0, None):
+        assert "building" in err.lower(), err
+        return
+    assert payload["building_input"] != "present", payload["building_input"]
+    assert payload["buildings_m2"] == 0.0, payload["buildings_m2"]
+    for row in payload["results"]:
+        assert "envelope_frac" not in row, (
+            "an envelope was published from a buildings file that carried no buildings"
+        )
+
+
+def _fixture_osm_buildings_truncated(count=2):
+    """A timed-out fetch that still returned SOME buildings.
+
+    This is the shape that matters: Overpass reports a partial result as
+    HTTP 200 with a `remark` and whatever it managed to collect. Two buildings
+    out of nine thousand is 0.02% of the layer, and an "area > 0" threshold
+    calls that a present input.
+    """
+    payload = {"version": 0.6, "remark": "runtime error: Query timed out", "elements": []}
+    for i in range(count):
+        east = 70 + (i % 8) * 2
+        north = 10 + (i // 8) * 2
+        ring = [
+            _ll_offset(east, north),
+            _ll_offset(east + 1, north),
+            _ll_offset(east + 1, north + 1),
+            _ll_offset(east, north + 1),
+            _ll_offset(east, north),
+        ]
+        payload["elements"].append(
+            {
+                "type": "way",
+                "id": 100 + i,
+                "tags": {"building": "yes"},
+                "geometry": [{"lon": lon, "lat": lat} for lon, lat in ring],
+            }
+        )
+    return _write_json(f"osm-buildings-truncated-{count}.json", payload)
+
+
+def test_a_remark_bearing_buildings_file_never_licenses_the_envelope():
+    """The signal was computed, reported, and then not acted on.
+
+    `building_source_remark: true` was already written into the very JSON whose
+    envelope figures the remark invalidates. An "area > 0" test let 2 buildings
+    out of 9,360 — 0.02% of the layer — republish an envelope matching the
+    verify-fail numbers to 0.01 pp, at exit 0 with a silent stderr, while the
+    report carried the evidence that the fetch had failed.
+
+    A wrong threshold is a misjudgement; a signal computed and then ignored is
+    leaving the proof of your own invalidity in the output. `remark` is exact,
+    so no threshold has to be guessed.
+    """
+    for count in (2, 200):
+        code, payload, err = _run_blank(
+            ["--buildings", str(_fixture_osm_buildings_truncated(count))]
+        )
+        if code not in (0, None):
+            assert "building" in err.lower(), err
+            continue
+        assert payload["building_input"] != "present", (count, payload["building_input"])
+        assert payload.get("building_source_remark") is True, payload
+        assert err.strip(), "a partial fetch must be announced on stderr"
+        for row in payload["results"]:
+            assert "envelope_frac" not in row, (
+                f"{count} buildings from a timed-out fetch republished an envelope"
+            )
+
+
+def test_fetch_overpass_does_not_bank_a_remark_as_a_successful_fetch():
+    """The acquisition layer has to refuse it too.
+
+    Otherwise `osm` writes the truncated file, prints `status: 200`, exits 0,
+    and the user never learns the fetch failed — the withholding downstream
+    would be the only hint, one command too late.
+    """
+    import json as _json
+    import tempfile
+
+    class _Resp:
+        status_code = 200
+        headers: dict = {}
+
+        def __init__(self, body):
+            self.content = body
+
+    class _Session:
+        """Every mirror answers with the same remark-bearing body.
+
+        A first draft returned the remark once and a clean body after, so the
+        second mirror legitimately saved — which is correct behaviour, and
+        made the case test the opposite of what it claims.
+        """
+
+        def __init__(self, body):
+            self.body = body
+            self.calls = 0
+
+        def post(self, url, **kwargs):
+            self.calls += 1
+            return _Resp(self.body)
+
+    remark_body = _json.dumps(
+        {"version": 0.6, "remark": "runtime error: Query timed out", "elements": []}
+    ).encode()
+
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "out.json"
+        session = _Session(remark_body)
+        record = gp.fetch_overpass(
+            "[out:json];out;", target, session=session, attempts=1, backoff=0
+        )
+        assert session.calls == len(gp.OVERPASS_URLS), session.calls
+        assert not target.exists(), "a remark-bearing body was written to disk"
+    assert not record.get("saved"), record
+    assert any(a.get("remark") for a in record["attempts"]), record
+
+
+def test_building_input_needs_area_not_merely_elements():
+    """S11: "decided by area, not element count", finally pinned.
+
+    The claim lived only in a comment. Every buildings fixture sits inside the
+    bbox, so `building_features > 0` behaved identically to `area > 0` and a
+    mutant swapping them survived. This file has real elements whose geometry
+    falls entirely outside the measured area.
+    """
+    ring = [
+        _ll_offset(5000, 5000),
+        _ll_offset(5050, 5000),
+        _ll_offset(5050, 5050),
+        _ll_offset(5000, 5050),
+        _ll_offset(5000, 5000),
+    ]
+    outside = _write_json(
+        "osm-buildings-outside.json",
+        {
+            "elements": [
+                {
+                    "type": "way",
+                    "id": 7,
+                    "tags": {"building": "yes"},
+                    "geometry": [{"lon": lon, "lat": lat} for lon, lat in ring],
+                }
+            ]
+        },
+    )
+    _code, payload, _err = _run_blank(["--buildings", str(outside)])
+    assert payload["building_features"] >= 1, payload
+    assert payload["buildings_m2"] == 0.0, payload
+    assert payload["building_input"] == "empty", payload["building_input"]
+
+
+def test_an_empty_buildings_file_is_reported_distinctly_from_a_missing_one():
+    """Both withhold, but they are different facts and must read differently."""
+    _, absent, _ = _run_blank([])
+    _, empty, _ = _run_blank(
+        ["--buildings", str(_fixture_osm_buildings_timed_out())]
+    )
+    assert absent["building_input"] == "absent", absent["building_input"]
+    assert empty["building_input"] not in ("absent", "present"), empty["building_input"]
+
+
+def test_withholding_is_loud_on_stderr_and_drops_the_dependent_figures():
+    """S2: the "loud" half of the guard had nothing pinning it.
+
+    Deleting the stderr warning kept the exam green, and so did deleting the
+    line that removes the carriageway range — the parts that make a withheld
+    run visible were the parts nothing checked.
+    """
+    _, payload, err = _run_blank([])
+    assert "building" in err.lower(), repr(err)
+    assert err.strip(), "a withheld run must say so on stderr"
+    for row in payload["results"]:
+        assert "carriageway_adjusted_frac_range" not in row, row
+        assert row.get("withheld"), row
+
+
+def test_building_query_asks_for_ways_and_relations_separately():
+    """S3: `'"building"' in query` is satisfied by the relation clause alone.
+
+    Breaking the way clause to `way["buildingz"]` left the exam green, so both
+    clauses are now named.
+    """
+    query = gp.OSM_FETCHES["buildings"]["query"](25.0, 121.5, 25.1, 121.6)
+    assert 'way["building"](' in query, query
+    assert 'relation["building"](' in query, query
+
+
+def test_every_fetched_layer_is_consumed_by_a_documented_command():
+    """S1: the invariant only ran one way.
+
+    `needed <= written` is satisfied by shrinking `needed`, so deleting
+    `--buildings` from §7.4 passed 52/52 — and B1 is the extreme form of that
+    same direction: the flag is present but what it points at is empty. Both
+    ends are now asserted, so a layer cannot be quietly dropped from either
+    the producing side or the consuming side.
+    """
+    consumed = set()
+    for tokens in _documented_invocations():
+        for i, token in enumerate(tokens):
+            if token in ("--osm", "--highways", "--buildings") and i + 1 < len(tokens):
+                consumed.add(Path(tokens[i + 1].strip("<>")).name)
+    fetched = {spec["filename"] for spec in gp.OSM_FETCHES.values()}
+    unused = fetched - consumed
+    assert not unused, (
+        f"{sorted(unused)} is fetched by the documented `osm` command but no "
+        f"documented command consumes it — the report would not depend on it"
+    )
+
+
+def test_a_documented_shaped_command_reproduces_a_known_number_end_to_end():
+    """argv all the way to a published figure, on synthetic inputs.
+
+    The round-4 guard stops at "the parser accepts this". This one runs a real
+    command through `main()` and checks the number that comes out, which is the
+    link AC2 is actually about. Network-free and fixture-sized, so it can live
+    in the exam; it does not re-measure Taipei, and §2.6 says so.
+
+    Geometry: a 100x100 m area, one 100x50 landuse polygon, no corridor and no
+    buildings inside, so exactly half the area is blank.
+
+    Three things this case got wrong and now does not (S6):
+
+    * it checked `true_blank_frac_of_bbox`, while §7.4 publishes
+      `envelope_frac` — the published figure is now the asserted one;
+    * the tolerance was +/-0.02 against 0.4972, which is 3.5% of relative
+      slack, enough for a mutant multiplying the result by 1.03 to live. The
+      fixtures project exactly now, so the tolerance is 1e-4;
+    * it ran 2 of the 11 rules and 1 of the 3 sources, so `blank_envelope`,
+      the carriageway adjustment and the surveyed-road credit never executed.
+      City roads and zoning are supplied, which brings all of them in.
+    """
+    code, payload, _err = _run_blank(
+        [
+            "--buildings", str(_fixture_osm_buildings()),
+            "--city-roads", str(_fixture_city_roads()),
+            "--shp", str(_fixture_zoning()),
+            "--class-field", "ZONE",
+        ]
+    )
+    assert code in (0, None), code
+    assert payload["building_input"] == "present", payload
+
+    rules = {r["rule"] for r in payload["results"]}
+    sources = {r["source"] for r in payload["results"]}
+    assert sources == {"B_osm", "A_zoning", "A_union_B"}, sources
+    # The city rule is what pulls `blank_envelope`, the carriageway adjustment
+    # and the surveyed-road credit into the run. Drivable rules need `--tags`,
+    # i.e. the pipeline checkout, so they are covered by their own case rather
+    # than made a precondition of this one.
+    assert any("city road surface only" in r for r in rules), rules
+
+    row = next(
+        r
+        for r in payload["results"]
+        if r["source"] == "B_osm" and r["rule"] == "city road surface only (measured)"
+    )
+    # Exactly half the fixture area is unpainted, and neither the fixture's
+    # roads nor its buildings sit inside it.
+    assert abs(row["true_blank_frac_of_bbox"] - 0.5) < 1e-4, row
+
+    # The two ranges are asserted against EXPECTED CONSTANTS, not read back
+    # from the same output and fed in again (S10). Reading them back made the
+    # check a tautology: mutants collapsing the proxy span to 1.0/1.0 or the
+    # carriageway high end to 0.0 both survived, and those are the second and
+    # third of §7.5's three named dimensions.
+    #
+    # The fixture road is 50 x 20 = 1000 m^2 with 200 + 50 + 30 + 10 = 290 m^2
+    # of non-carriageway, so the share range is 250/1000 .. 290/1000. The proxy
+    # span is the measured 0.824 .. 1.150 (§7.3), which is also the CLI default.
+    assert payload["non_carriageway_share_range"] == [0.25, 0.29], payload[
+        "non_carriageway_share_range"
+    ]
+    assert payload["building_proxy_ratio_range"] == [0.824, 1.150], payload[
+        "building_proxy_ratio_range"
+    ]
+
+    # The PUBLISHED figure, from the graded function applied to this row's own
+    # components and those constants — that pins the wiring, not just the value.
+    low, high = gp.blank_envelope(
+        row["true_blank_m2"],
+        row.get("blank_credited_to_surveyed_road_m2", 0.0),
+        row["building_contribution_m2"],
+        [0.25, 0.29],
+        [0.824, 1.150],
+    )
+    area = payload["bbox_area_m2"]
+    assert abs(row["envelope_frac"][0] - low / area) < 1e-6, row
+    assert abs(row["envelope_frac"][1] - high / area) < 1e-6, row
+
+
+def test_narrow_carriageway_column_set_is_pinned_too():
+    """S16: the NARROW set is half of the published range's definition.
+
+    §7.2 reports 19.78% - 28.92%; the low end comes from this tuple. The wide
+    set was pinned in round 4 and this one was not, so a mutant could move the
+    published low end without a single case going red.
+    """
+    assert set(gp.NARROW_NON_CARRIAGEWAY_COLUMNS) == {"SWALK_AREA", "DITCH_AREA"}, (
+        gp.NARROW_NON_CARRIAGEWAY_COLUMNS
+    )
+    assert set(gp.NARROW_NON_CARRIAGEWAY_COLUMNS) < set(gp.NON_CARRIAGEWAY_COLUMNS)
+    shares = gp.road_attribute_shares(
+        _fixture_road_shapefile(),
+        gp.BBox(0.0, 0.0, 100.0, 100.0),
+        encoding="utf-8",
+        columns=gp.NARROW_NON_CARRIAGEWAY_COLUMNS,
+    )
+    # 30 sidewalk + 5 ditch over a 200 m^2 union; the medians must NOT appear.
+    assert abs(shares["non_carriageway_m2"] - 35.0) < 1e-6, shares
+    assert set(shares["per_column_m2"]) == {"SWALK_AREA", "DITCH_AREA"}, shares
 
 
 # --- runner ----------------------------------------------------------------

@@ -23,10 +23,13 @@ Discipline, enforced by `ground-probe.selftest.py`:
 
 Sub-commands
 ------------
-  osm       fetch M1-bbox landuse/natural/leisure/waterway + highways (Overpass)
+  osm       fetch every layer in OSM_FETCHES for the area (Overpass)
   measure   measure a saved fetch: coverage, classes, holes, edges, two methods
-  zoning    measure a local land-use-zoning file (GeoJSON) the same way
+  blank     true-blank sensitivity across corridor rules, with the envelope
   avail     availability sampling of a tile/imagery endpoint
+
+`measure` also reads shapefiles (`--source shp`), which is how candidate A is
+measured through exactly the same geometry code as candidate B.
 """
 
 from __future__ import annotations
@@ -493,6 +496,51 @@ def highway_query(south, west, north, east) -> str:
     return f'[out:json][timeout:180];\n(\n  way["highway"]({bbox});\n);\nout geom;\n'
 
 
+def building_query(south, west, north, east) -> str:
+    """Building footprints, relations included.
+
+    Large buildings are routinely multipolygon relations, and this layer
+    carries the whole §7.5 building term.
+    """
+    bbox = f"{south},{west},{north},{east}"
+    return (
+        "[out:json][timeout:180];\n(\n"
+        f'  way["building"]({bbox});\n'
+        f'  relation["building"]({bbox});\n'
+        ");\nout geom;\n"
+    )
+
+
+#: The ONE place naming the layers this report is measured from and the file
+#: each is written to. `cmd_osm` iterates it and the exam reads it, so a layer
+#: cannot be consumed by a documented command without also being fetched by one.
+#:
+#: It exists because `osm-buildings.json` was consumed by §7.4 and produced by
+#: nothing: `blank` read the absent file as "no buildings" and published an
+#: envelope 9.7-13.4 pp away from the report's, at exit 0 with an empty stderr.
+#: Four review rounds missed it because every reviewer recomputed with their own
+#: fetcher; the first person to run the documented commands found it at once.
+OSM_FETCHES = {
+    "areas": {"filename": "osm-areas.json", "query": overpass_query},
+    "highways": {"filename": "osm-highways.json", "query": highway_query},
+    "buildings": {"filename": "osm-buildings.json", "query": building_query},
+}
+
+
+def _has_remark(payload: bytes) -> bool:
+    """Does an Overpass JSON body carry a `remark`?
+
+    `remark` is how Overpass says "this answer is not the answer you asked
+    for" — timeout, out of memory, partial result — while still returning 200.
+    It is an EXACT signal, so nothing here has to guess a completeness
+    threshold. The body is parsed, never restated (§2.5).
+    """
+    try:
+        return bool(json.loads(payload.decode("utf-8")).get("remark"))
+    except Exception:  # noqa: BLE001 — an unparseable body is handled elsewhere
+        return False
+
+
 def fetch_overpass(
     query: str, out_path: Path, session=None, timeout=300, attempts=4, backoff=45.0
 ) -> dict:
@@ -536,6 +584,14 @@ def fetch_overpass(
             }
             log.append(record)
             if response.status_code == 200 and record["body_class"] == "json_like":
+                # Overpass reports a failed or partial query as HTTP 200 with a
+                # `remark`, so status alone cannot say the fetch worked. Banking
+                # it would write a truncated layer, print `status: 200` and exit
+                # 0 — the user would not learn the fetch failed until a later
+                # command withheld its figures, one command too late.
+                if _has_remark(payload):
+                    record["remark"] = True
+                    continue
                 out_path.parent.mkdir(parents=True, exist_ok=True)
                 out_path.write_bytes(payload)
                 return {"saved": str(out_path), "attempts": log}
@@ -933,13 +989,12 @@ def cmd_osm(args) -> int:
         "wgs84_bbox": [south, west, north, east],
         "epsg3826_bbox": [bbox.e_min, bbox.n_min, bbox.e_max, bbox.n_max],
     }
-    record["areas"] = fetch_overpass(
-        overpass_query(south, west, north, east), out / "osm-areas.json"
-    )
-    time.sleep(args.delay)
-    record["highways"] = fetch_overpass(
-        highway_query(south, west, north, east), out / "osm-highways.json"
-    )
+    for index, (name, spec) in enumerate(OSM_FETCHES.items()):
+        if index:
+            time.sleep(args.delay)  # courtesy pause between Overpass queries
+        record[name] = fetch_overpass(
+            spec["query"](south, west, north, east), out / spec["filename"]
+        )
     print(json.dumps(record, ensure_ascii=False, indent=2))
     return 0
 
@@ -1156,15 +1211,46 @@ def cmd_blank(args) -> int:
     all_lines = highways_by_class(hw_payload)
     drv_lines = highways_by_class(hw_payload, set(drivable)) if drivable else {}
 
+    # The envelope's building term is a PROXY for the NLSC tiles and it moves
+    # candidate B by 9.7-13.4 pp, so anything short of real building geometry
+    # is a MISSING INPUT rather than "no buildings".
+    #
+    # `building_input` is derived from what reached the computation, NEVER from
+    # whether the flag appeared. The first version read `args.buildings` and so
+    # stamped `present` on a timed-out Overpass response — 200, valid JSON,
+    # `remark`, zero elements — which reproduced the verify-fail numbers with a
+    # label asserting the input was there. A field describing the input cannot
+    # be decided by the command line.
     buildings = Polygon()
-    if args.buildings:
+    building_features = 0
+    building_remark = None
+    if not args.buildings:
+        building_input = "absent"
+    else:
         payload = json.loads(Path(args.buildings).read_text(encoding="utf-8"))
+        building_remark = payload.get("remark")
         feats, _ = features_from_overpass(
             {"elements": [{**e, "tags": {"landuse": "_b"}} for e in payload.get("elements", [])]}
         )
         built = build(feats)
+        building_features = len(built.geoms)
         if built.geoms:
             buildings = unary_union(built.geoms).intersection(clip)
+        # Two tests, and the remark comes FIRST because it is exact.
+        #
+        # An area threshold cannot separate "the layer arrived" from "2 of
+        # 9,360 buildings arrived before the query timed out": 0.02% of the
+        # layer has positive area and reproduces the verify-fail numbers to
+        # 0.01 pp. `remark` says outright that the answer is not the answer
+        # that was asked for — and this code was already computing it, writing
+        # `building_source_remark` into the same JSON whose envelope the remark
+        # invalidates, and then publishing anyway. A signal computed and not
+        # acted on is worse than one never computed: it leaves the proof of the
+        # output's invalidity inside the output.
+        if building_remark:
+            building_input = "incomplete"
+        else:
+            building_input = "present" if buildings.area > 0 else "empty"
 
     city = []
     if args.city_roads:
@@ -1217,6 +1303,28 @@ def cmd_blank(args) -> int:
     else:
         non_lane_hi = non_lane_lo = 0.0
     report["non_carriageway_share_range"] = [non_lane_lo, non_lane_hi]
+    report["building_input"] = building_input
+    report["building_features"] = building_features
+    if building_remark:
+        # Overpass reports query failures in `remark` with HTTP 200, so the
+        # class of failure is recorded — the text itself is upstream body and
+        # is not restated (§2.5).
+        report["building_source_remark"] = True
+    if building_input != "present":
+        reason = {
+            "absent": "--buildings was not given",
+            "empty": "the buildings file contributed no area inside the bbox",
+            "incomplete": (
+                f"the buildings file carries an Overpass remark, so its "
+                f"{building_features} feature(s) are a partial answer"
+            ),
+        }[building_input]
+        print(
+            f"warning: {reason}; envelope figures are withheld. "
+            "Fetch the layer with `osm --area <area> --out <dir>` "
+            "(writes osm-buildings.json).",
+            file=sys.stderr,
+        )
 
     # The building proxy's span is MEASURED, and it is not symmetric: NLSC to
     # OSM footprint ratios came out 0.824 .. 1.150, i.e. -17.6% / +15.0%. Using
@@ -1238,6 +1346,19 @@ def cmd_blank(args) -> int:
                 round((row["true_blank_m2"] + non_lane_lo * credited) / bbox.area_m2, 6),
                 round((row["true_blank_m2"] + non_lane_hi * credited) / bbox.area_m2, 6),
             ]
+            row["building_input"] = building_input
+            if building_input != "present":
+                # No envelope, and no carriageway range either: both fold in the
+                # building term. Publishing them here is exactly the silent
+                # second answer this guard exists to prevent.
+                row.pop("carriageway_adjusted_frac_range", None)
+                row["withheld"] = (
+                    "envelope needs building geometry inside the bbox; "
+                    "see OSM_FETCHES['buildings']"
+                )
+                row.update({"source": name, "rule": rule_name})
+                report["results"].append(row)
+                continue
             low, high = blank_envelope(
                 row["true_blank_m2"],
                 credited,
