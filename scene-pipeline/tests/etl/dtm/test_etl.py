@@ -805,6 +805,36 @@ def test_a_successful_run_leaves_no_temporary_files(aligned_source, run_etl):
     assert list(result.output_path.parent.glob("*.tmp")) == []
 
 
+def test_every_temporary_is_replaced_from_beside_its_destination(tmp_path, aligned_source,
+                                                                 attribution, monkeypatch):
+    """os.replace is only atomic within one filesystem, so the invariant is
+    "the temporary is a sibling of its destination" -- not "it is tidy".
+
+    A temporary under `tempfile.gettempdir()` is indistinguishable on a
+    single-volume machine and silently degrades into a copy on a machine whose
+    TMPDIR is another disk, reintroducing the half-written file at the real
+    path this whole dance exists to prevent. That cannot be tested by
+    provoking it portably, so it is tested where it is decided: every rename
+    this module performs must have src.parent == dst.parent.
+    """
+    seen = []
+    real = os.replace
+
+    def recording(src, dst):
+        seen.append((Path(src), Path(dst)))
+        return real(src, dst)
+
+    monkeypatch.setattr(os, "replace", recording)
+    run_dtm_etl(source=aligned_source, out=tmp_path / "out" / "dtm.tif",
+                source_overrides=attribution)
+
+    assert seen, "no rename was observed; the publish path changed shape"
+    for src, dst in seen:
+        assert src.parent == dst.parent, (
+            f"{src} is not beside {dst}: os.replace is not atomic across filesystems"
+        )
+
+
 def test_rerunning_replaces_the_previous_output(tmp_path, aligned_source, source_array, run_etl):
     out = tmp_path / "out" / "dtm.tif"
     run_etl(aligned_source, out=out)

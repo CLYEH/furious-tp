@@ -296,6 +296,39 @@ def test_a_timeout_part_way_through_the_body_leaves_no_part_file(tmp_path, monke
     assert list(tmp_path.glob("*.part")) == []
 
 
+def test_an_interrupted_download_leaves_no_part_file(tmp_path, monkeypatch):
+    """Ctrl-C is not an `OSError` here either, and this is the longest step.
+
+    `_publish` grew an `except BaseException` for exactly this reason; without
+    the same clause here the module ships half a policy, and the half that is
+    missing covers the step an interrupt is *most* likely to land in. A
+    nationwide 20 m DTM is gigabytes, and downloading it takes longer than
+    everything else this ETL does put together — pressing Ctrl-C during it is
+    not an exotic case, it is the normal way an operator changes their mind.
+
+    The invariant is the one this function's own docstring states, "leaving
+    nothing behind if it fails", and it does not have an exception-type
+    clause: an interrupt that leaves a gigabyte-sized `.part` in the download
+    directory violates it just as squarely as a dropped connection would, and
+    unlike the error paths nothing would ever come back to tidy it.
+    """
+
+    def interrupted_mid_body(*a, **k):
+        def chunks():
+            yield b"abc"
+            raise KeyboardInterrupt()
+
+        return _FakeResponse(chunks())
+
+    monkeypatch.setattr(requests, "get", interrupted_mid_body)
+    dest = tmp_path / "dtm.tif"
+    dest.write_bytes(b"the-raster-downloaded-last-week")
+    with pytest.raises(KeyboardInterrupt):
+        download_source("https://example.invalid/dtm.tif", dest, timeout=30.0)
+    assert list(tmp_path.glob("*.part")) == []
+    assert dest.read_bytes() == b"the-raster-downloaded-last-week"
+
+
 def test_a_failed_download_does_not_destroy_the_copy_already_on_disk(tmp_path, monkeypatch):
     """The `.part` hop guards what is already there, not just tidiness.
 
