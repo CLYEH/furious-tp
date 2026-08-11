@@ -466,6 +466,25 @@ describe("recordSample — the signals must agree", () => {
   });
 });
 
+// Same rule as the unparseable detail (S2): the tileset id is upstream content
+// that ends up in the page, so it is bounded too. Normally it is 5 characters.
+describe("the tileset id is not a channel for whatever upstream sends", () => {
+  it("keeps a normal id intact", () => {
+    const { alerts } = feed(emptyRecord(URL_UNDER_TEST), [HASH_A, HASH_B, HASH_B, HASH_B], "112_A");
+    const mismatch = alerts.find((a) => a.kind === "signal-mismatch");
+    expect(mismatch?.kind === "signal-mismatch" && mismatch.detail).toContain("112_A");
+  });
+
+  it("bounds an absurd id instead of rendering all of it", () => {
+    const huge = "X".repeat(5000);
+    const { alerts } = feed(emptyRecord(URL_UNDER_TEST), [HASH_A, HASH_B, HASH_B, HASH_B], huge);
+    const mismatch = alerts.find((a) => a.kind === "signal-mismatch");
+    const detail = mismatch?.kind === "signal-mismatch" ? mismatch.detail : "";
+    expect(detail.length).toBeLessThan(200);
+    expect(detail).toContain("5000 字元");
+  });
+});
+
 describe("recordSample — the record cannot grow without bound", () => {
   it("keeps at most MAX_TRACKED_HASHES observations", async () => {
     let record = emptyRecord(URL_UNDER_TEST);

@@ -248,7 +248,7 @@ export function recordSample(
       alerts.push({
         kind: "signal-mismatch",
         url: record.url,
-        detail: `內容指紋改變但 tileset id 未動(${String(tilesetId)})`,
+        detail: `內容指紋改變但 tileset id 未動(${displayId(tilesetId)})`,
       });
     }
     establishedHash = hash;
@@ -269,6 +269,16 @@ export function recordSample(
 }
 
 const short = (hash: string): string => hash.slice(0, 12);
+
+/**
+ * The tileset id comes from upstream and ends up in the page, so the same rule
+ * that governs the unparseable detail governs it: bounded, never a channel for
+ * whatever the service decided to send. It is normally 5 characters ("112_A").
+ */
+const displayId = (id: string | null): string => {
+  if (id === null) return "(無)";
+  return id.length <= 40 ? id : `${id.slice(0, 40)}…(共 ${id.length} 字元)`;
+};
 
 export function describeAlert(alert: TilesetAlert): string {
   switch (alert.kind) {
