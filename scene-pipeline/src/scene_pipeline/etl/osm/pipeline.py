@@ -192,6 +192,13 @@ def run_osm_etl(
         session=session,
         expected_sha256=expected_sha256,
     )
+    # The notice is written the moment the bytes land, before anything that can
+    # fail on their content. A run dying in read_extract otherwise leaves OSM
+    # bytes in <out>/source/ with no licence notice anywhere in the directory —
+    # and AC2's whole argument is that source isolation means a directory you
+    # can point at (Layer 2 review, round 1, S4).
+    attribution_path = write_attribution(out_dir, record)
+
     extract = read_extract(record.path)
 
     transformer = Transformer.from_crs(SOURCE_CRS, TARGET_CRS, always_xy=True)
@@ -199,7 +206,6 @@ def run_osm_etl(
     nodes, ways, warnings = _place(extract, bbox, projected)
     topology = build_topology(nodes, ways)
 
-    attribution_path = write_attribution(out_dir, record)
     output_path = out_dir / INTERMEDIATE_DIRNAME / OUTPUT_FILENAME
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(
