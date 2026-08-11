@@ -1305,6 +1305,141 @@ def test_building_input_is_decided_by_the_computation_not_by_the_flag():
         )
 
 
+def _fixture_osm_buildings_truncated(count=2):
+    """A timed-out fetch that still returned SOME buildings.
+
+    This is the shape that matters: Overpass reports a partial result as
+    HTTP 200 with a `remark` and whatever it managed to collect. Two buildings
+    out of nine thousand is 0.02% of the layer, and an "area > 0" threshold
+    calls that a present input.
+    """
+    payload = {"version": 0.6, "remark": "runtime error: Query timed out", "elements": []}
+    for i in range(count):
+        east = 70 + (i % 8) * 2
+        north = 10 + (i // 8) * 2
+        ring = [
+            _ll_offset(east, north),
+            _ll_offset(east + 1, north),
+            _ll_offset(east + 1, north + 1),
+            _ll_offset(east, north + 1),
+            _ll_offset(east, north),
+        ]
+        payload["elements"].append(
+            {
+                "type": "way",
+                "id": 100 + i,
+                "tags": {"building": "yes"},
+                "geometry": [{"lon": lon, "lat": lat} for lon, lat in ring],
+            }
+        )
+    return _write_json(f"osm-buildings-truncated-{count}.json", payload)
+
+
+def test_a_remark_bearing_buildings_file_never_licenses_the_envelope():
+    """The signal was computed, reported, and then not acted on.
+
+    `building_source_remark: true` was already written into the very JSON whose
+    envelope figures the remark invalidates. An "area > 0" test let 2 buildings
+    out of 9,360 — 0.02% of the layer — republish an envelope matching the
+    verify-fail numbers to 0.01 pp, at exit 0 with a silent stderr, while the
+    report carried the evidence that the fetch had failed.
+
+    A wrong threshold is a misjudgement; a signal computed and then ignored is
+    leaving the proof of your own invalidity in the output. `remark` is exact,
+    so no threshold has to be guessed.
+    """
+    for count in (2, 200):
+        code, payload, err = _run_blank(
+            ["--buildings", str(_fixture_osm_buildings_truncated(count))]
+        )
+        if code not in (0, None):
+            assert "building" in err.lower(), err
+            continue
+        assert payload["building_input"] != "present", (count, payload["building_input"])
+        assert payload.get("building_source_remark") is True, payload
+        assert err.strip(), "a partial fetch must be announced on stderr"
+        for row in payload["results"]:
+            assert "envelope_frac" not in row, (
+                f"{count} buildings from a timed-out fetch republished an envelope"
+            )
+
+
+def test_fetch_overpass_does_not_bank_a_remark_as_a_successful_fetch():
+    """The acquisition layer has to refuse it too.
+
+    Otherwise `osm` writes the truncated file, prints `status: 200`, exits 0,
+    and the user never learns the fetch failed — the withholding downstream
+    would be the only hint, one command too late.
+    """
+    import json as _json
+    import tempfile
+
+    class _Resp:
+        status_code = 200
+        headers: dict = {}
+
+        def __init__(self, body):
+            self.content = body
+
+    class _Session:
+        def __init__(self, bodies):
+            self.bodies = list(bodies)
+
+        def post(self, url, **kwargs):
+            return _Resp(self.bodies.pop(0) if self.bodies else b"{}")
+
+    remark_body = _json.dumps(
+        {"version": 0.6, "remark": "runtime error: Query timed out", "elements": []}
+    ).encode()
+
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "out.json"
+        record = gp.fetch_overpass(
+            "[out:json];out;",
+            target,
+            session=_Session([remark_body]),
+            attempts=1,
+            backoff=0,
+        )
+        assert not target.exists(), "a remark-bearing body was written to disk"
+    assert not record.get("saved"), record
+    assert any(a.get("remark") for a in record["attempts"]), record
+
+
+def test_building_input_needs_area_not_merely_elements():
+    """S11: "decided by area, not element count", finally pinned.
+
+    The claim lived only in a comment. Every buildings fixture sits inside the
+    bbox, so `building_features > 0` behaved identically to `area > 0` and a
+    mutant swapping them survived. This file has real elements whose geometry
+    falls entirely outside the measured area.
+    """
+    ring = [
+        _ll_offset(5000, 5000),
+        _ll_offset(5050, 5000),
+        _ll_offset(5050, 5050),
+        _ll_offset(5000, 5050),
+        _ll_offset(5000, 5000),
+    ]
+    outside = _write_json(
+        "osm-buildings-outside.json",
+        {
+            "elements": [
+                {
+                    "type": "way",
+                    "id": 7,
+                    "tags": {"building": "yes"},
+                    "geometry": [{"lon": lon, "lat": lat} for lon, lat in ring],
+                }
+            ]
+        },
+    )
+    _code, payload, _err = _run_blank(["--buildings", str(outside)])
+    assert payload["building_features"] >= 1, payload
+    assert payload["buildings_m2"] == 0.0, payload
+    assert payload["building_input"] == "empty", payload["building_input"]
+
+
 def test_an_empty_buildings_file_is_reported_distinctly_from_a_missing_one():
     """Both withhold, but they are different facts and must read differently."""
     _, absent, _ = _run_blank([])
@@ -1414,14 +1549,30 @@ def test_a_documented_shaped_command_reproduces_a_known_number_end_to_end():
     # roads nor its buildings sit inside it.
     assert abs(row["true_blank_frac_of_bbox"] - 0.5) < 1e-4, row
 
-    # The PUBLISHED figure, and it must be the graded function's output for
-    # this row's own components — that pins the wiring, not just the value.
+    # The two ranges are asserted against EXPECTED CONSTANTS, not read back
+    # from the same output and fed in again (S10). Reading them back made the
+    # check a tautology: mutants collapsing the proxy span to 1.0/1.0 or the
+    # carriageway high end to 0.0 both survived, and those are the second and
+    # third of §7.5's three named dimensions.
+    #
+    # The fixture road is 50 x 20 = 1000 m^2 with 200 + 50 + 30 + 10 = 290 m^2
+    # of non-carriageway, so the share range is 250/1000 .. 290/1000. The proxy
+    # span is the measured 0.824 .. 1.150 (§7.3), which is also the CLI default.
+    assert payload["non_carriageway_share_range"] == [0.25, 0.29], payload[
+        "non_carriageway_share_range"
+    ]
+    assert payload["building_proxy_ratio_range"] == [0.824, 1.150], payload[
+        "building_proxy_ratio_range"
+    ]
+
+    # The PUBLISHED figure, from the graded function applied to this row's own
+    # components and those constants — that pins the wiring, not just the value.
     low, high = gp.blank_envelope(
         row["true_blank_m2"],
         row.get("blank_credited_to_surveyed_road_m2", 0.0),
         row["building_contribution_m2"],
-        payload["non_carriageway_share_range"],
-        payload["building_proxy_ratio_range"],
+        [0.25, 0.29],
+        [0.824, 1.150],
     )
     area = payload["bbox_area_m2"]
     assert abs(row["envelope_frac"][0] - low / area) < 1e-6, row
