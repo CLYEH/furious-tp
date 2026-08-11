@@ -113,6 +113,14 @@ gh api repos/CLYEH/furious-tp/branches/develop/protection
 
 **這條需要 admin。** 本檔因此不複述它的數值(必要檢查清單、review 數量)—— 以指令輸出為準。用 bot 憑證跑會得到 HTTP **404**(不是 403;GitHub 對權限不足的這個端點回 404),而那個 404 本身就是證據:**agent 連保護設定長什麼樣都讀不到,只能照著紀律走。**
 
+**C5b** 同一件事有一個粗粒度版本,**不需要 admin**:
+
+```bash
+gh api repos/CLYEH/furious-tp/branches --jq '.[]|[.name,(.protected|tostring)]|@tsv'
+```
+
+`develop`、`main`、`test` 三條都應為 `true`(`test` 會自動部署,所以它一起算)。這條的界線要講清楚:**agent 查得出保護被整個關掉,查不出保護被改鬆。** 要看鬆緊只能靠 C5,而 C5 要 admin。
+
 **C6** code-owner 要求不只是寫在檔案裡,而是真的會生效。開一個動到治理檔的 PR,**在手動指定任何 reviewer 之前**查:
 
 ```bash
