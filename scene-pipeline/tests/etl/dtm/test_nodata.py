@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
+import rasterio
 
 from scene_pipeline.etl.dtm.errors import DtmCoverageError
 from scene_pipeline.etl.dtm.etl import OUTPUT_NODATA
@@ -238,3 +239,112 @@ def test_the_policy_is_named_in_the_provenance_record(voided_aligned_source, run
     assert record["nodata"]["output_nodata"] == OUTPUT_NODATA
     assert record["nodata"]["fill"] is False
     assert record["valid_fraction"] == pytest.approx(result.valid_fraction)
+
+
+# ------------------------------------------------- the sentinel value itself
+#
+# Everything above compares against `OUTPUT_NODATA` imported from the module
+# under test, which makes all of it true for whatever value the constant
+# happens to hold. Move the constant to 0.0 and every assertion above stays
+# green while each downstream consumer begins reading real sea-level ground as
+# void. The cases below are the ones that hold the value still: they spell the
+# number out, and they exercise the elevation that a sentinel of 0.0 would eat.
+
+# Taipei's DTM carries genuine ground at (and slightly below) 0 m along the
+# Tamsui and Keelung river mouths; Taiwan's ceiling is Yushan at 3952 m. A
+# sentinel anywhere inside this band is indistinguishable from a measurement.
+PLAUSIBLE_ELEVATION_RANGE_M = (-50.0, 4000.0)
+
+# Real ground at exactly 0.0 m, in source pixel coordinates.
+SEA_LEVEL = (slice(100, 105), slice(100, 105))
+
+
+def sea_level_block_in_output() -> tuple[slice, slice]:
+    """Where `SEA_LEVEL` lands in the clipped output."""
+    rows, cols = SOURCE_WINDOW
+    return (
+        slice(SEA_LEVEL[0].start - rows.start, SEA_LEVEL[0].stop - rows.start),
+        slice(SEA_LEVEL[1].start - cols.start, SEA_LEVEL[1].stop - cols.start),
+    )
+
+
+@pytest.fixture
+def coastal_source(tmp_path, source_array):
+    """A source holding real, measured ground at exactly 0.0 m."""
+    array = source_array.copy()
+    array[SEA_LEVEL] = 0.0
+    return write_raster(tmp_path / "src" / "coastal.tif", array, west=SOURCE_WEST,
+                        north=SOURCE_NORTH)
+
+
+def test_the_output_void_sentinel_is_pinned_to_minus_9999():
+    """The literal, on purpose — this is the assertion the constant cannot slip past.
+
+    Written as a bare value rather than against anything imported, because the
+    thing being guarded *is* the import. -9999.0 is not arbitrary: it is the
+    value the module's own comment and README both justify, and the value every
+    downstream stage will mask on.
+    """
+    assert OUTPUT_NODATA == -9999.0
+
+
+def test_the_sentinel_cannot_be_mistaken_for_an_elevation_taiwan_can_produce():
+    """The reason for the number, stated as a property rather than a constant.
+
+    Pinning -9999.0 alone would be satisfied by any future edit that changed
+    both the constant and the test together. This is the rule that edit would
+    still have to answer to: a sentinel is only a sentinel if no real
+    measurement can collide with it.
+    """
+    low, high = PLAUSIBLE_ELEVATION_RANGE_M
+    assert not low <= OUTPUT_NODATA <= high
+
+
+def test_the_published_raster_declares_the_pinned_sentinel(aligned_source, run_etl):
+    """The GeoTIFF tag is what a consumer masks on, so it is pinned by value."""
+    _, profile = read_band(run_etl(aligned_source).output_path)
+    assert profile["nodata"] == -9999.0
+
+
+def test_the_record_pins_the_sentinel_and_agrees_with_the_raster(voided_aligned_source, run_etl):
+    """Two claims, both load-bearing.
+
+    A consumer that reads the JSON rather than the GeoTIFF tag learns from
+    `nodata.output_nodata` which value means "no measurement", so that value is
+    pinned literally here. And it must be the value actually written into the
+    band: a record naming a different sentinel than the raster beside it is the
+    same falsified pair this module is arranged to prevent, only quieter — the
+    numbers would look like elevations and nothing would complain.
+    """
+    import json
+
+    result = run_etl(voided_aligned_source)
+    record = json.loads(result.provenance_path.read_text(encoding="utf-8"))
+    _, profile = read_band(result.output_path)
+    assert record["nodata"]["output_nodata"] == -9999.0
+    assert record["nodata"]["output_nodata"] == profile["nodata"]
+
+
+def test_ground_at_exactly_zero_metres_is_published_as_measured_ground(coastal_source, run_etl):
+    """The boundary the choice of sentinel is actually about.
+
+    A sentinel of 0.0 does not break anything visibly: the ETL still runs, still
+    reports its `valid_fraction`, still writes a plausible raster. What changes
+    is that every consumer masking on the declared nodata silently deletes the
+    river-mouth and coastal ground this case stands for.
+
+    So the observation is made the way a consumer makes it — `masked=True`
+    applies the file's own nodata tag — and not by comparing against the
+    constant, because the constant is precisely what would have moved.
+    """
+    result = run_etl(coastal_source)
+    block = sea_level_block_in_output()
+
+    with rasterio.open(result.output_path) as src:
+        published = src.read(1, masked=True)
+
+    assert not np.ma.getmaskarray(published)[block].any(), (
+        "ground measured at exactly 0 m was masked away as void"
+    )
+    assert (published.data[block] == 0.0).all()
+    assert result.valid_fraction == pytest.approx(1.0)

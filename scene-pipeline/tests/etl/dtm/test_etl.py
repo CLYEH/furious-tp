@@ -267,6 +267,58 @@ def test_provenance_describes_both_grids_and_the_contract(aligned_source, run_et
     assert record["tool"]["name"] == "scene_pipeline.etl.dtm"
 
 
+@pytest.fixture
+def phase_shifted_source(tmp_path):
+    """A source offset half a pixel from the 20 m grid.
+
+    On a grid-aligned source every kernel degenerates to a pure copy and all
+    four produce bit-identical output, so a comparison between two kernels there
+    proves nothing. Shifting the phase is what makes them genuinely disagree.
+    """
+    west, north, size = 304810.0, 2771810.0, 220
+    e, n = pixel_centres(west, north, RESOLUTION_M, size, size)
+    return write_raster(tmp_path / "src" / "shifted.tif", linear_elevation(e, n).astype("float32"),
+                        west=west, north=north)
+
+
+@pytest.mark.parametrize("method", ["nearest", "bilinear", "cubic", "average"])
+def test_the_record_names_the_kernel_that_was_actually_used(aligned_source, run_etl, method):
+    """Not covered by the default-only assertion above.
+
+    A record that hard-codes "bilinear" agrees with every run that takes the
+    default, which is every run the rest of this exam makes. Asking each kernel
+    for its own name is what separates a reported value from a constant.
+    """
+    record = json.loads(
+        run_etl(aligned_source, resampling=method).provenance_path.read_text(encoding="utf-8")
+    )
+    assert record["output"]["resampling"] == method
+
+
+def test_the_recorded_kernel_distinguishes_rasters_that_really_differ(tmp_path, run_etl,
+                                                                     phase_shifted_source):
+    """Why the field has to track the argument: the kernel moves the elevations.
+
+    The two runs below produce different ground — asserted, so this case cannot
+    pass by comparing two identical rasters — and the record is the only thing a
+    downstream consumer has to tell them apart. A hard-coded label would put the
+    same provenance beside both, and the wrong one would look entirely normal.
+    """
+    near = run_etl(phase_shifted_source, out=tmp_path / "near" / "dtm.tif", resampling="nearest")
+    bilin = run_etl(phase_shifted_source, out=tmp_path / "bilin" / "dtm.tif", resampling="bilinear")
+
+    near_data, _ = read_band(near.output_path)
+    bilin_data, _ = read_band(bilin.output_path)
+    assert not np.array_equal(near_data, bilin_data), (
+        "the two kernels produced identical rasters, so this case would pin nothing"
+    )
+
+    assert json.loads(near.provenance_path.read_text(encoding="utf-8"))["output"]["resampling"] \
+        == "nearest"
+    assert json.loads(bilin.provenance_path.read_text(encoding="utf-8"))["output"]["resampling"] \
+        == "bilinear"
+
+
 def test_a_local_source_needs_an_explicit_retrieval_date(aligned_source, tmp_path, attribution):
     """Only a download witnesses a date.
 
@@ -850,3 +902,58 @@ def test_an_unusable_output_destination_is_reported(tmp_path, aligned_source, ru
     blocker.write_text("I am a file, not a directory", encoding="utf-8")
     with pytest.raises(DtmOutputError, match="blocker"):
         run_etl(aligned_source, out=blocker / "dtm.tif")
+
+
+DTM_README = Path(__file__).resolve().parents[3] / "src" / "scene_pipeline" / "etl" / "dtm" \
+    / "README.md"
+
+
+def readme_limitation_paragraph() -> str:
+    """The single-publisher paragraph of the module README, or a loud failure.
+
+    Returning "" when the anchor moves would make the assertions below
+    vacuously true, which is the shape of false green this project has already
+    shipped more than once. So the locator asserts it found exactly one.
+    """
+    paragraphs = [p for p in DTM_README.read_text(encoding="utf-8").split("\n\n")
+                  if "使用限制" in p]
+    assert len(paragraphs) == 1, (
+        f"expected exactly one 使用限制 paragraph in {DTM_README.name}, found {len(paragraphs)}"
+    )
+    return paragraphs[0]
+
+
+def test_the_documented_way_to_publish_in_parallel_is_one_that_actually_works(
+    tmp_path, aligned_source, run_etl
+):
+    """The mitigation an operator is told to use has to be one that works.
+
+    The record path is derived from the output *stem*, so two genuinely
+    different `--out` values can still land on one record — measured below
+    rather than argued: `dtm.tif` and `dtm.tiff` share `dtm.source.json`. An
+    operator who parallelises by "give it a different `--out`" therefore still
+    ends up with run B's provenance sitting beside run A's elevations, with no
+    lock, no detection and nothing that looks wrong.
+
+    The two halves are pinned together on purpose. If the record path is ever
+    made to follow the whole filename, the collision below disappears and this
+    case fails — which is exactly the moment the README paragraph has to be
+    rewritten, rather than quietly becoming wrong in the other direction.
+    """
+    run_a = run_etl(aligned_source, out=tmp_path / "pub" / "dtm.tif")
+    run_b = run_etl(aligned_source, out=tmp_path / "pub" / "dtm.tiff")
+
+    assert run_a.output_path != run_b.output_path
+    assert run_a.provenance_path == run_b.provenance_path, (
+        "two different --out values no longer collide; the README mitigation can be widened"
+    )
+    survivor = json.loads(run_b.provenance_path.read_text(encoding="utf-8"))
+    assert survivor["output"]["path"] == "dtm.tiff"
+
+    limitation = readme_limitation_paragraph()
+    assert "不同的 `--out`" not in limitation, (
+        "the README still offers the mitigation the collision above disproves"
+    )
+    assert "stem" in limitation and "目錄" in limitation, (
+        "the README must name what actually separates two publishers: directory or stem"
+    )
