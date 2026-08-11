@@ -2,8 +2,8 @@
 # only with the human's code-owner review. Agents keep proposal rights (PRs);
 # the human alone holds merge rights on these paths. API contract files
 # (contracts/) are deliberately excluded — gated by their own flow.
-/CLAUDE.md @CLYEH
-/.github/ @CLYEH
-/.github/workflows/ @CLYEH
-/.github/CODEOWNERS @CLYEH
-/DESIGN.md @CLYEH
+/CLAUDE.md @yclawlobster
+/.github/ @yclawlobster
+/.github/workflows/ @yclawlobster
+/.github/CODEOWNERS @yclawlobster
+/DESIGN.md @yclawlobster
