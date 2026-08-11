@@ -59,9 +59,11 @@ async function attemptLoad<T>(
 ): Promise<Attempt<T>> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    // `Promise.resolve().then` so a loader that throws synchronously lands in
-    // the same catch as one that rejects.
-    const loading = Promise.resolve().then(() => load(url));
+    // A loader that throws synchronously lands in the enclosing catch, same as
+    // one that rejects — no wrapper needed. (There was one, with a comment
+    // claiming it was what routed sync throws here. Mutation testing showed
+    // removing it changed nothing, because the comment was wrong.)
+    const loading = load(url);
     // A load that loses the race can still reject later. Claim it now, or the
     // rejection surfaces as an unhandled one long after we stopped caring.
     loading.catch(() => undefined);

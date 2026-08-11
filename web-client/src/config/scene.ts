@@ -52,7 +52,15 @@ export const INITIAL_CAMERA: CameraView = {
   rollDegrees: 0,
 };
 
-/** Edges belong to the box: the M1 area is closed, not half-open. */
+/**
+ * Edges belong to the box: the M1 area is closed, not half-open.
+ *
+ * The finiteness guards are redundant today — every comparison below is already
+ * false for NaN and for an infinity, and mutation testing confirms removing
+ * them changes no result. They stay because that is a property of `>=`/`<=`
+ * specifically: the day this becomes a clamp, a distance test or a `Math.min`,
+ * the NaN case starts passing silently and nothing else would notice.
+ */
 export function isInsideM1Bbox(longitude: number, latitude: number): boolean {
   return (
     Number.isFinite(longitude) &&
