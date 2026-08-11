@@ -3,8 +3,8 @@
     "target": "ES2022",
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
-    "lib": ["ES2022"],
-    "outDir": "dist",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "noEmit": true,
     "rootDir": "src",
     "strict": true,
     "noUncheckedIndexedAccess": true,
@@ -12,9 +12,7 @@
     "exactOptionalPropertyTypes": true,
     "forceConsistentCasingInFileNames": true,
     "skipLibCheck": true,
-    "types": ["node"],
-    "declaration": true,
-    "sourceMap": true
+    "types": ["node"]
   },
   "include": ["src"]
 }
