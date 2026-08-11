@@ -287,6 +287,57 @@ def edge_stats(features, bbox: BBox) -> dict[str, int]:
     return stats
 
 
+def source_split(features, bbox: BBox) -> dict:
+    """Clipped area carried by ways vs by relations.
+
+    The reuse question — "can FTP-29's clipper do this?" — is decided by AREA,
+    not by element count. `etl/osm/read.py` walks `osmium.osm.WAY` only, so
+    whatever share sits in relations is invisible to it, and a handful of
+    relations can hold most of the ground.
+    """
+    clip = bbox.polygon()
+    out = {}
+    for name in ("way", "relation"):
+        built = build([f for f in features if f.source == name])
+        area = (
+            float(unary_union(built.geoms).intersection(clip).area)
+            if built.geoms
+            else 0.0
+        )
+        out[f"{name}_features"] = len(built.geoms)
+        out[f"{name}_m2"] = area
+    total = out["way_m2"] + out["relation_m2"]
+    out["relation_share_of_area"] = (
+        round(out["relation_m2"] / total, 4) if total else None
+    )
+    return out
+
+
+def edge_band(features, bbox: BBox, width_m: float) -> dict:
+    """Coverage in a band along the bbox edge vs the interior.
+
+    The boundary worry is "does clipping leave a blank rim?". Counting clipped
+    features cannot answer it — only comparing how well the rim is covered
+    against how well the middle is can. Equal fractions mean no rim.
+    """
+    clip = bbox.polygon()
+    inner = clip.buffer(-width_m)
+    band = clip.difference(inner)
+    built = build(features)
+    union = unary_union(built.geoms).intersection(clip) if built.geoms else Polygon()
+    band_area = float(band.area)
+    inner_area = float(inner.area)
+    return {
+        "width_m": width_m,
+        "band_fraction": round(float(union.intersection(band).area) / band_area, 6)
+        if band_area
+        else None,
+        "interior_fraction": round(float(union.intersection(inner).area) / inner_area, 6)
+        if inner_area
+        else None,
+    }
+
+
 def size_distribution(features, bbox: BBox) -> dict:
     """Clipped per-feature areas — the granularity question, as numbers.
 
@@ -357,6 +408,7 @@ def sample_availability(url, samples=20, session=None, delay_s=3.0, timeout=20.0
         import requests
 
         session = requests.Session()
+        session.headers["User-Agent"] = USER_AGENT
 
     records = []
     ok = errors = 0
@@ -416,6 +468,13 @@ OVERPASS_URLS = (
     "https://overpass.kumi.systems/api/interpreter",
 )
 
+#: Measured, not assumed: overpass-api.de answers the default `python-requests`
+#: User-Agent with **406** on an otherwise identical, valid query, and **200**
+#: with this one. Same query, same second, only the header differs. Without
+#: this line the probe reports a dead source that is in fact alive — the exact
+#: shape of false red this spike is supposed to avoid.
+USER_AGENT = "furious-tp-spike/FTP-69 (engineering due diligence; contact via repo)"
+
 AREA_TAGS = ("landuse", "natural", "leisure", "waterway", "amenity", "place")
 
 
@@ -434,35 +493,55 @@ def highway_query(south, west, north, east) -> str:
     return f'[out:json][timeout:180];\n(\n  way["highway"]({bbox});\n);\nout geom;\n'
 
 
-def fetch_overpass(query: str, out_path: Path, session=None, timeout=300) -> dict:
+def fetch_overpass(
+    query: str, out_path: Path, session=None, timeout=300, attempts=4, backoff=45.0
+) -> dict:
+    """POST `query` to the mirrors in turn, retrying on 429.
+
+    EVERY attempt is recorded, not just the last one. A fetch that succeeded on
+    the third try after two 429s is a different fact about the source than a
+    fetch that worked first time, and the report needs to be able to say which
+    happened — Overpass's rate limit is part of what candidate B costs.
+    """
     if session is None:
         import requests
 
         session = requests.Session()
-    last = None
-    for url in OVERPASS_URLS:
-        started = time.monotonic()
-        try:
-            response = session.post(url, data={"data": query}, timeout=timeout)
-        except Exception as exc:  # noqa: BLE001
-            last = {"endpoint": url, "status": "error", "error_class": type(exc).__name__}
-            continue
-        payload = response.content or b""
-        record = {
-            "endpoint": url,
-            "status": response.status_code,
-            "bytes": len(payload),
-            "body_class": _body_class(payload),
-            "ms": round((time.monotonic() - started) * 1000),
-            "at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
-        }
-        if response.status_code == 200 and record["body_class"] == "json_like":
-            out_path.parent.mkdir(parents=True, exist_ok=True)
-            out_path.write_bytes(payload)
-            record["saved"] = str(out_path)
-            return record
-        last = record
-    return last or {"status": "error", "error_class": "NoEndpointAnswered"}
+        session.headers["User-Agent"] = USER_AGENT
+    log: list[dict] = []
+    for round_index in range(attempts):
+        for url in OVERPASS_URLS:
+            started = time.monotonic()
+            stamp = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
+            try:
+                response = session.post(url, data={"data": query}, timeout=timeout)
+            except Exception as exc:  # noqa: BLE001
+                log.append(
+                    {
+                        "at": stamp,
+                        "endpoint": url,
+                        "status": "error",
+                        "error_class": type(exc).__name__,
+                    }
+                )
+                continue
+            payload = response.content or b""
+            record = {
+                "at": stamp,
+                "endpoint": url,
+                "status": response.status_code,
+                "bytes": len(payload),
+                "body_class": _body_class(payload),
+                "ms": round((time.monotonic() - started) * 1000),
+            }
+            log.append(record)
+            if response.status_code == 200 and record["body_class"] == "json_like":
+                out_path.parent.mkdir(parents=True, exist_ok=True)
+                out_path.write_bytes(payload)
+                return {"saved": str(out_path), "attempts": log}
+        if round_index < attempts - 1:
+            time.sleep(backoff * (round_index + 1))
+    return {"saved": None, "attempts": log}
 
 
 # --- OSM element -> Feature ------------------------------------------------
@@ -648,10 +727,111 @@ def cmd_osm(args) -> int:
     return 0
 
 
+def _ring_is_outer(ring) -> bool:
+    """ESRI shapefile rule: an outer ring is clockwise, a hole is anticlockwise.
+
+    Decided by the sign of the shoelace sum rather than by ring order, because
+    a shape's parts arrive in file order and a hole is not required to follow
+    the ring it punches.
+    """
+    total = 0.0
+    for (x0, y0), (x1, y1) in zip(ring, ring[1:]):
+        total += (x1 - x0) * (y1 + y0)
+    return total > 0  # clockwise in a Y-up frame
+
+
+def features_from_shapefile(path, class_field, class_key, encoding="cp950"):
+    """Read a polygon shapefile into the same Feature shape as the OSM path.
+
+    Same downstream code measures both candidates; a comparison where each
+    side went through its own union/clip logic would be comparing the scripts
+    as much as the data.
+    """
+    import shapefile  # pyshp; only this branch needs it
+
+    reader = shapefile.Reader(str(path), encoding=encoding)
+    names = [f[0] for f in reader.fields[1:]]
+    features: list[Feature] = []
+    stats = {
+        "elements": 0,
+        "way_features": 0,
+        "relation_features": 0,
+        "rings_total": 0,
+        "shapes_multi_ring": 0,
+        "clockwise_rings": 0,
+        "anticlockwise_rings": 0,
+        "orphan_inner_rings": 0,
+        "shapes_no_clockwise_ring": 0,
+    }
+    for shape_record in reader.iterShapeRecords():
+        stats["elements"] += 1
+        geom = shape_record.shape
+        if not geom.points:
+            continue
+        record = dict(zip(names, shape_record.record))
+        value = str(record.get(class_field, "?")).strip() or "(blank)"
+
+        bounds = list(geom.parts) + [len(geom.points)]
+        rings = [
+            [(float(x), float(y)) for x, y in geom.points[bounds[i] : bounds[i + 1]]]
+            for i in range(len(bounds) - 1)
+        ]
+        rings = [r for r in rings if len(r) >= MIN_RING_POSITIONS]
+        stats["rings_total"] += len(rings)
+        if len(rings) > 1:
+            stats["shapes_multi_ring"] += 1
+        outers = [r for r in rings if _ring_is_outer(r)]
+        inners = [r for r in rings if not _ring_is_outer(r)]
+        stats["clockwise_rings"] += len(outers)
+        stats["anticlockwise_rings"] += len(inners)
+        if not outers:
+            # Every ring anticlockwise. Either the shape is a hole with no
+            # body — impossible — or the file does not follow the ESRI
+            # orientation rule. Treat them all as outers rather than dropping
+            # real ground, and COUNT it, because if this fires often the
+            # orientation signal is not carrying information and any hole this
+            # reader reports from it is unreliable. The report says so.
+            outers, inners = rings, []
+            stats["shapes_no_clockwise_ring"] += 1
+
+        outer_polys = [Polygon(r) for r in outers]
+        assigned: dict[int, list] = {i: [] for i in range(len(outers))}
+        for inner in inners:
+            point = Polygon(inner).representative_point()
+            for i, poly in enumerate(outer_polys):
+                if poly.is_valid and poly.contains(point):
+                    assigned[i].append(inner)
+                    break
+            else:
+                stats["orphan_inner_rings"] += 1
+        for i, outer in enumerate(outers):
+            features.append(
+                feature(class_key, value, outer, assigned[i], source="way")
+            )
+            stats["way_features"] += 1
+    return features, stats
+
+
+def _exclude(features, values):
+    """Drop whole classes by value, e.g. a plan-extent polygon.
+
+    Kept as an explicit flag whose argument is echoed into the report, so a
+    coverage number can never quietly depend on a filter nobody can see.
+    """
+    if not values:
+        return features, []
+    dropped = sorted({f.value for f in features if f.value in values})
+    return [f for f in features if f.value not in values], dropped
+
+
 def _load_features(args, bbox: BBox):
     if args.source == "osm":
         payload = json.loads(Path(args.input).read_text(encoding="utf-8"))
         return features_from_overpass(payload)
+    if args.source == "shp":
+        return features_from_shapefile(
+            args.input, args.class_field or "分區簡稱", args.class_key, args.encoding
+        )
     geojson = json.loads(Path(args.input).read_text(encoding="utf-8"))
     features: list[Feature] = []
     stats = {"elements": 0, "way_features": 0, "relation_features": 0, "untagged": 0}
@@ -679,12 +859,14 @@ def _load_features(args, bbox: BBox):
 def cmd_measure(args) -> int:
     bbox = BBox.from_area_file(args.area)
     features, stats = _load_features(args, bbox)
+    features, dropped = _exclude(features, set(args.exclude_class or ()))
 
     result = coverage(features, bbox)
     report = {
         "at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
         "input": str(args.input),
         "bbox_area_m2": bbox.area_m2,
+        "excluded_classes": dropped,
         "parse_stats": stats,
         "coverage": {
             "covered_m2": round(result.covered_m2, 1),
@@ -697,6 +879,11 @@ def cmd_measure(args) -> int:
             k: round(v, 1) for k, v in class_areas(features, bbox).items()
         },
         "edge": edge_stats(features, bbox),
+        "source_split": {
+            k: (round(v, 1) if isinstance(v, float) else v)
+            for k, v in source_split(features, bbox).items()
+        },
+        "edge_band": edge_band(features, bbox, args.edge_band),
         "size_distribution_m2": {
             k: (round(v, 1) if isinstance(v, float) else v)
             for k, v in size_distribution(features, bbox).items()
@@ -748,6 +935,69 @@ def cmd_measure(args) -> int:
     return 0
 
 
+def cmd_combine(args) -> int:
+    """Measure OSM and zoning together — the hybrid question, as one number.
+
+    Answers "does A fill B's holes?" by measuring the union of the two rather
+    than adding their coverages, which would double-count every square metre
+    both of them describe.
+    """
+    bbox = BBox.from_area_file(args.area)
+    osm_payload = json.loads(Path(args.osm).read_text(encoding="utf-8"))
+    osm_features, _ = features_from_overpass(osm_payload)
+    zoning_features, _ = features_from_shapefile(
+        args.shp, args.class_field or "分區簡稱", "zone", args.encoding
+    )
+    zoning_features, dropped = _exclude(zoning_features, set(args.exclude_class or ()))
+
+    only_osm = coverage(osm_features, bbox)
+    only_zoning = coverage(zoning_features, bbox)
+    both = coverage(list(osm_features) + list(zoning_features), bbox)
+
+    osm_built = build(osm_features)
+    zoning_built = build(zoning_features)
+    clip = bbox.polygon()
+    osm_union = unary_union(osm_built.geoms).intersection(clip)
+    zoning_union = unary_union(zoning_built.geoms).intersection(clip)
+    osm_gap = clip.difference(osm_union)
+    filled = osm_gap.intersection(zoning_union)
+
+    report = {
+        "at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
+        "bbox_area_m2": bbox.area_m2,
+        "excluded_classes": dropped,
+        "osm_fraction": round(only_osm.fraction, 6),
+        "zoning_fraction": round(only_zoning.fraction, 6),
+        "union_fraction": round(both.fraction, 6),
+        "osm_gap_m2": round(osm_gap.area, 1),
+        "zoning_fills_of_osm_gap_m2": round(filled.area, 1),
+        "zoning_fills_share_of_osm_gap": round(filled.area / osm_gap.area, 4)
+        if osm_gap.area
+        else None,
+        "still_uncovered_m2": round(clip.difference(unary_union([osm_union, zoning_union])).area, 1),
+    }
+    if args.highways:
+        from shapely.geometry import LineString
+
+        payload = json.loads(Path(args.highways).read_text(encoding="utf-8"))
+        corridor = unary_union(
+            [
+                LineString(line).buffer(args.road_halfwidth)
+                for line in highways_from_overpass(payload)
+                if len(line) >= 2
+            ]
+        )
+        rest = clip.difference(unary_union([osm_union, zoning_union]))
+        report["still_uncovered_road_corridor_m2"] = round(
+            rest.intersection(corridor).area, 1
+        )
+        report["still_uncovered_other_m2"] = round(
+            rest.area - rest.intersection(corridor).area, 1
+        )
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+    return 0
+
+
 def cmd_avail(args) -> int:
     report = sample_availability(
         args.url, samples=args.samples, delay_s=args.delay, timeout=args.timeout
@@ -774,14 +1024,32 @@ def main(argv=None) -> int:
     p_m = sub.add_parser("measure", help="measure a saved fetch")
     p_m.add_argument("--area", required=True)
     p_m.add_argument("--input", required=True)
-    p_m.add_argument("--source", choices=("osm", "geojson"), default="osm")
+    p_m.add_argument("--source", choices=("osm", "geojson", "shp"), default="osm")
+    p_m.add_argument("--encoding", default="cp950", help="dbf encoding for --source shp")
     p_m.add_argument("--class-key", default="zone")
     p_m.add_argument("--class-field", default=None)
     p_m.add_argument("--min-hole", type=float, default=100.0)
     p_m.add_argument("--grid-step", type=float, default=None)
     p_m.add_argument("--highways", default=None)
     p_m.add_argument("--road-halfwidth", type=float, default=8.0)
+    p_m.add_argument("--edge-band", type=float, default=50.0)
+    p_m.add_argument(
+        "--exclude-class",
+        action="append",
+        help="drop every feature with this class value; echoed into the output",
+    )
     p_m.set_defaults(func=cmd_measure)
+
+    p_c = sub.add_parser("combine", help="measure OSM and zoning as one union")
+    p_c.add_argument("--area", required=True)
+    p_c.add_argument("--osm", required=True)
+    p_c.add_argument("--shp", required=True)
+    p_c.add_argument("--class-field", default=None)
+    p_c.add_argument("--encoding", default="cp950")
+    p_c.add_argument("--exclude-class", action="append")
+    p_c.add_argument("--highways", default=None)
+    p_c.add_argument("--road-halfwidth", type=float, default=8.0)
+    p_c.set_defaults(func=cmd_combine)
 
     p_a = sub.add_parser("avail", help="availability sampling")
     p_a.add_argument("--url", required=True)
