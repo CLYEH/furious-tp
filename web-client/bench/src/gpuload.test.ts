@@ -27,9 +27,9 @@
  *   concurrency: N/A — a pure reduction over an already-captured sample.
  */
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
-import { summariseGpuLoad } from "./gpuload.ts";
+import { collectGpuLoad, createNvidiaSmiIo, summariseGpuLoad } from "./gpuload.ts";
 
 /** Real `nvidia-smi --query-compute-apps=pid,process_name --format=csv,noheader` output from this rig. */
 const REAL_APPS = [
@@ -233,5 +233,105 @@ describe("summariseGpuLoad", () => {
     expect(load.supported).toBe(true);
     expect(load.foreignProcesses).toEqual([]);
     expect(load.foreignProcessesPresent).toBe(false);
+  });
+});
+
+/**
+ * The WIRING, not just the reduction.
+ *
+ * `summariseGpuLoad` is well covered — five mutants inside it, all killed. The
+ * hole was one level up, in the driver nobody can test: passing
+ * `resolvedNames: {}` at the call site silently undoes the entire dwm fix and
+ * restores the permanently-true contention flag, and that mutant SURVIVED.
+ *
+ * So the collection is a seam with its I/O injected. What still needs a browser
+ * (launchPersistentContext, CDP) stays unexamined on purpose; this does not.
+ */
+describe("collectGpuLoad", () => {
+  const io = () => ({
+    utilisation: vi.fn(() => "7"),
+    computeApps: vi.fn(
+      () => "2000, [Insufficient Permissions]\n21032, [Insufficient Permissions]",
+    ),
+    resolveNames: vi.fn((pids: readonly number[]) =>
+      Object.fromEntries(pids.map((pid) => [pid, pid === 2000 ? "dwm" : "brave"])),
+    ),
+    ourPids: vi.fn(() => [] as number[]),
+  });
+
+  it("resolves the PIDs it found before deciding anything", () => {
+    // The mutant that survived: dropping this call. Without resolution dwm
+    // stays in the list as "[Insufficient Permissions]" and the flag is true on
+    // every machine forever.
+    const deps = io();
+    const load = collectGpuLoad(deps);
+    expect(deps.resolveNames).toHaveBeenCalledTimes(1);
+    expect(deps.resolveNames.mock.calls[0]?.[0]).toEqual([2000, 21032]);
+    expect(load.foreignProcesses.map((p) => p.name)).toEqual(["brave"]);
+    expect(load.foreignProcessesPresent).toBe(true);
+  });
+
+  it("reports a genuinely clean rig as clean", () => {
+    // The other half of the control. Without it, "resolve then drop everything"
+    // would satisfy the case above.
+    const deps = { ...io(), computeApps: vi.fn(() => "2000, [Insufficient Permissions]") };
+    const load = collectGpuLoad(deps);
+    expect(load.foreignProcesses).toEqual([]);
+    expect(load.foreignProcessesPresent).toBe(false);
+  });
+
+  it("excludes our own browser by PID", () => {
+    const deps = { ...io(), ourPids: vi.fn(() => [21032]) };
+    const load = collectGpuLoad(deps);
+    expect(load.foreignProcesses).toEqual([]);
+  });
+
+  it("says it could not measure when the tool is missing", () => {
+    const deps = { ...io(), computeApps: vi.fn(() => null), utilisation: vi.fn(() => null) };
+    const load = collectGpuLoad(deps);
+    expect(load.supported).toBe(false);
+    expect(load.foreignProcessesPresent).toBeNull();
+    // Resolution is pointless with no list, and must not be invented.
+    expect(deps.resolveNames).not.toHaveBeenCalled();
+  });
+
+  it("survives a resolver that fails without claiming the rig was clean", () => {
+    const deps = {
+      ...io(),
+      resolveNames: vi.fn(() => {
+        throw new Error("Get-Process exploded");
+      }),
+    };
+    const load = collectGpuLoad(deps);
+    // Unresolved occupants stay in the list as unknowns rather than vanishing.
+    expect(load.foreignProcessesPresent).toBe(true);
+    expect(load.foreignProcesses.length).toBeGreaterThan(0);
+  });
+});
+
+describe("createNvidiaSmiIo", () => {
+  it("asks nvidia-smi for the process list and passes the resolver through", () => {
+    // Guards the wiring the driver used to hold inline, where a one-line
+    // `resolveNames: () => ({})` reverted B2 with nothing to catch it.
+    const run = vi.fn((_cmd: string, args: string[]) =>
+      args[0]?.includes("compute-apps") === true ? "2000, [Insufficient Permissions]" : "5",
+    );
+    const resolveNames = vi.fn(() => ({ 2000: "dwm" }));
+    const load = collectGpuLoad(createNvidiaSmiIo(run, () => [], resolveNames));
+
+    expect(run).toHaveBeenCalledWith("nvidia-smi", [
+      "--query-compute-apps=pid,process_name",
+      "--format=csv,noheader",
+    ]);
+    expect(resolveNames).toHaveBeenCalledWith([2000]);
+    // dwm resolved and excluded: the whole point of B2, end to end.
+    expect(load.foreignProcessesPresent).toBe(false);
+    expect(load.utilizationPctAtStart).toBe(5);
+  });
+
+  it("reports unsupported when the tool is absent", () => {
+    const load = collectGpuLoad(createNvidiaSmiIo(() => null, () => [], () => ({})));
+    expect(load.supported).toBe(false);
+    expect(load.foreignProcessesPresent).toBeNull();
   });
 });

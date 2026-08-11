@@ -21,7 +21,25 @@ import { type RigExpectation, checkRigGpu } from "./rig.ts";
 import type { RouteKind } from "./route.ts";
 import { type DriftAnalysis, type SeriesSummary, analyseDrift, summariseSeries } from "./stats.ts";
 
-export const REPORT_SCHEMA_VERSION = 1;
+export const REPORT_SCHEMA_VERSION = 2;
+
+/**
+ * Limitations that travel WITH the numbers.
+ *
+ * These were previously only in a PR comment and half a line of source. A
+ * reader opening a report six months from now has neither, and both of these
+ * change how a figure in that file should be read — so they ship inside it.
+ */
+export const KNOWN_LIMITATIONS: readonly string[] = [
+  "externalGpuLoad.foreignProcessesPresent 目前在 reference rig 上尚未觀測到 false:" +
+    "owner 的 Brave 與 Acrobat 常駐於同一顆 GPU。true 代表偵測到常駐行程," +
+    "不代表本次量測受到干擾(消費級卡無 per-process 利用率)。",
+  "中斷路徑:runBench 的 abort 處理與 --max-seconds 已端到端驗證(報告會寫出且標記 invalid)," +
+    "但 Node 的 SIGINT handler 在真實 console Ctrl-C 下是否觸發,尚未在本平台驗證 —— " +
+    "Windows 上 kill 與 child.kill('SIGINT') 都是 TerminateProcess,無法用來驗證。",
+  "frameTimesMs 是 widget.render() 的主執行緒耗時,含 tile ingest、不含 GPU 非同步時間;" +
+    "本輸出不足以判定 D1 的 6 ms 翻案條件(詳見 bench/README.md)。",
+];
 
 export type CacheState = "cold" | "warm";
 
@@ -89,6 +107,16 @@ export interface RouteMeasurement {
   frameTimesMs: number[];
   /** Secondary series: presented-frame intervals, so the display cap stays visible. */
   presentIntervalsMs: number[];
+  /**
+   * Indices of presented-frame intervals that span a pose-batch boundary.
+   *
+   * Same length as frameTimesMs by construction, so `presentIntervalsMs[i] -
+   * frameTimesMs[i]` remains a valid pairing — that pairing is how this ticket
+   * showed ~6 ms falls outside render(). These particular samples include a
+   * round trip to Node, so they are named here and excluded from the summary
+   * rather than deleted, which would misalign the two series silently.
+   */
+  presentIntervalBoundaryIndices?: number[];
   startedAt: string;
   finishedAt: string;
   framesExpected: number;
@@ -120,7 +148,9 @@ export interface RouteReport {
   frameTimesMs: number[];
   presentIntervalsMs: number[];
   summary: SeriesSummary | null;
+  /** Excludes the batch-boundary samples named below. */
   presentSummary: SeriesSummary | null;
+  presentIntervalBoundaryIndices: number[];
   /** null = the series was too short to measure drift, not "no drift". */
   drift: DriftAnalysis | null;
 }
@@ -162,6 +192,8 @@ export interface BenchReport {
   schemaVersion: number;
   /** null only for callers that did not supply one (the exam's fakes). */
   config: BenchRunConfig | null;
+  /** Ships with the numbers; see KNOWN_LIMITATIONS. */
+  limitations: readonly string[];
   startedAt: string;
   finishedAt: string;
   environment: BenchEnvironment;
@@ -283,6 +315,7 @@ export function assembleReport(input: AssembleInput): BenchReport {
         finishedAt: null,
         frameTimesMs: [],
         presentIntervalsMs: [],
+        presentIntervalBoundaryIndices: [],
         summary: null,
         presentSummary: null,
         drift: null,
@@ -304,6 +337,7 @@ export function assembleReport(input: AssembleInput): BenchReport {
         finishedAt: null,
         frameTimesMs: [],
         presentIntervalsMs: [],
+        presentIntervalBoundaryIndices: [],
         summary: null,
         presentSummary: null,
         drift: null,
@@ -319,7 +353,12 @@ export function assembleReport(input: AssembleInput): BenchReport {
 
     const primary = trySummarise(measurement.frameTimesMs);
     if (primary.problem !== null) reasons.push(`frame time 序列無法統計:${primary.problem}`);
-    const present = trySummarise(measurement.presentIntervalsMs);
+    // Boundary samples carry a round trip to Node; summarising them would
+    // report harness overhead as presentation stalls.
+    const boundaries = new Set(measurement.presentIntervalBoundaryIndices ?? []);
+    const present = trySummarise(
+      measurement.presentIntervalsMs.filter((_, index) => !boundaries.has(index)),
+    );
 
     if (reasons.length > 0) problems.push(`路線 ${where}:${reasons.join(";")}`);
 
@@ -334,6 +373,7 @@ export function assembleReport(input: AssembleInput): BenchReport {
       // The raw series is kept whatever else is wrong with the route.
       frameTimesMs: measurement.frameTimesMs,
       presentIntervalsMs: measurement.presentIntervalsMs,
+      presentIntervalBoundaryIndices: [...boundaries],
       summary: primary.summary,
       presentSummary: present.summary,
       // null means "the series was too short to ask", never "no drift".
@@ -350,6 +390,7 @@ export function assembleReport(input: AssembleInput): BenchReport {
     gpuAccepted: gpu.accepted,
     schemaVersion: REPORT_SCHEMA_VERSION,
     config: input.config ?? null,
+    limitations: KNOWN_LIMITATIONS,
     startedAt: input.startedAt,
     finishedAt: input.finishedAt,
     environment: input.environment,

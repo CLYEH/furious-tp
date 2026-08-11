@@ -113,6 +113,26 @@ describe("assembleReport — a complete run", () => {
     expect(cold?.summary?.p95Ms).toBe(summariseSeries([8, 9, 10]).p95Ms);
   });
 
+  it("leaves batch-boundary samples out of the presented-frame summary", () => {
+    // A boundary sample spans a round trip to Node. Counting it would report
+    // harness overhead as a presentation stall — and since the two series are
+    // deliberately kept the same length so index pairing stays valid, the only
+    // way to exclude it is to name it.
+    const m = measurement("a", "cold", [8, 9, 10]);
+    const withBoundary = {
+      ...m,
+      presentIntervalsMs: [9, 9999, 11],
+      presentIntervalBoundaryIndices: [1],
+    };
+    const report = assembleReport(
+      input({ measurements: [withBoundary, measurement("a", "warm", [7, 8, 9])] }),
+    );
+    const cold = report.routes.find((r) => r.cache === "cold");
+    expect(cold?.presentIntervalsMs).toEqual([9, 9999, 11]);
+    expect(cold?.presentSummary?.maxMs).toBe(11);
+    expect(cold?.presentIntervalBoundaryIndices).toEqual([1]);
+  });
+
   it("summarises the SECOND series separately from the first", () => {
     // The secondary series exists solely to keep the display cadence visible
     // rather than silently reported as frame time. A mutant replacing
@@ -341,6 +361,16 @@ describe("assembleReport — which GPU actually drew this", () => {
     );
     expect(report.valid).toBe(false);
     expect(report.routes.find((r) => r.cache === "cold")?.frameTimesMs).toEqual([8, 9, 10]);
+  });
+
+  it("carries its own limitations, not just the PR that produced it", () => {
+    // A reader opening this file later has no PR comment and no source tree.
+    // Both of these change how its numbers should be read.
+    const report = assembleReport(input());
+    expect(report.limitations.length).toBeGreaterThanOrEqual(3);
+    expect(report.limitations.join(" ")).toMatch(/false/);
+    expect(report.limitations.join(" ")).toMatch(/Ctrl-C|SIGINT/);
+    expect(report.limitations.join(" ")).toMatch(/6 ms|D1/);
   });
 
   it("records the exact launch flags, because they decide which GPU was used", () => {

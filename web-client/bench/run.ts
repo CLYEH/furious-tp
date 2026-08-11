@@ -14,6 +14,7 @@
  */
 
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { LOCK_FILE, isReclaimable } from "./src/workspace.ts";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { parseArgs } from "node:util";
@@ -149,22 +150,59 @@ function summarise(report: BenchReport): string {
   return lines.join("\n");
 }
 
+/** Is a process with this id alive? Signal 0 tests without delivering anything. */
+function processIsRunning(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (cause) {
+    // EPERM means it exists and belongs to somebody else — still alive.
+    return (cause as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+async function readOwnerPid(path: string): Promise<number | null> {
+  try {
+    return Number((await readFile(join(path, LOCK_FILE), "utf8")).trim());
+  } catch {
+    // No lock file at all: nothing claims this directory.
+    return null;
+  }
+}
+
+/**
+ * Decide BEFORE deleting, never by trying.
+ *
+ * The first version deleted first and treated a failure as "still in use". On
+ * a concurrently running bench that removed the live page directory and then
+ * printed "still in use, left for next time" — rm succeeds on the unlocked
+ * files and only fails on the locked profile ones, so a partial deletion
+ * reported itself as a skip. Every uncertain case now keeps the directory.
+ */
 async function reclaimOldWorkspaces(): Promise<void> {
   try {
     const entries = await readdir(tmpdir());
     const stale = entries.filter((name) => name.startsWith("ftp48-bench-"));
     let reclaimed = 0;
+    let kept = 0;
     for (const name of stale) {
       const path = join(tmpdir(), name);
+      const verdict = isReclaimable({
+        ownerPid: await readOwnerPid(path),
+        isRunning: processIsRunning,
+      });
+      if (!verdict.reclaim) {
+        kept += 1;
+        continue;
+      }
       const removed = await rm(path, { recursive: true, force: true })
         .then(() => true)
         .catch(() => false);
       if (removed) reclaimed += 1;
+      else kept += 1;
     }
-    if (reclaimed > 0) console.log(`bench: 已回收 ${reclaimed} 個先前殘留的暫存目錄`);
-    if (stale.length > reclaimed) {
-      console.log(`bench: ${stale.length - reclaimed} 個暫存目錄仍被佔用,留待下次回收`);
-    }
+    if (reclaimed > 0) console.log(`bench: 已回收 ${reclaimed} 個無人持有的暫存目錄`);
+    if (kept > 0) console.log(`bench: ${kept} 個暫存目錄仍有持有者或無法判定,未觸碰`);
   } catch {
     // Reclaiming is housekeeping; it must never stop a run from starting.
   }
@@ -182,6 +220,9 @@ async function main(): Promise<number> {
   await reclaimOldWorkspaces();
 
   const workspace = await mkdtemp(join(tmpdir(), "ftp48-bench-"));
+  // Claim it before anything is put inside, so a concurrent run's reclaimer
+  // sees an owner rather than an apparently abandoned directory.
+  await writeFile(join(workspace, LOCK_FILE), String(process.pid), "utf8");
   const pageDir = join(workspace, "page");
   const controller = new AbortController();
 

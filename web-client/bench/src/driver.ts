@@ -22,7 +22,8 @@ import { join } from "node:path";
 import { type BrowserContext, type Page, chromium } from "@playwright/test";
 
 import type { BenchPageEnvironment, BenchPagePower, BenchPose } from "../page/main.ts";
-import { UNMEASURED_GPU_LOAD, summariseGpuLoad } from "./gpuload.ts";
+import { UNMEASURED_GPU_LOAD, collectGpuLoad, createNvidiaSmiIo } from "./gpuload.ts";
+import { DEFAULT_POSE_BATCH, planPoseBatches, runPoseBatches } from "./batching.ts";
 import type { MemorySample } from "./memory.ts";
 import type { BenchEnvironment, RouteMeasurement } from "./report.ts";
 import { type RouteDefinition, createAutopilot } from "./route.ts";
@@ -93,12 +94,7 @@ interface HeapUsage {
   usedSize: number;
 }
 
-/**
- * Frames per page.evaluate call. Small enough that an abort is acted on within
- * a few seconds, large enough that the per-batch round-trip is noise against a
- * route of thousands of frames.
- */
-const POSE_BATCH = 300;
+
 
 const MEASUREMENT_NOTE =
   "主序列 frameTimesMs = 手動驅動 render loop 下 widget.render() 的主執行緒耗時(不含 GPU 非同步執行);" +
@@ -157,15 +153,6 @@ function resolveProcessNames(pids: readonly number[]): Record<number, string> {
     if (Number.isInteger(pid) && name !== undefined && name !== "") resolved[pid] = name;
   }
   return resolved;
-}
-
-/** The PIDs nvidia-smi says are on the GPU, whatever it managed to call them. */
-function gpuProcessPids(computeApps: string | null): number[] {
-  if (computeApps === null) return [];
-  return computeApps
-    .split(String.fromCharCode(10))
-    .map((line) => Number(line.split(",")[0]?.trim()))
-    .filter((pid) => Number.isInteger(pid) && pid > 0);
 }
 
 /**
@@ -259,17 +246,11 @@ export function createPlaywrightDriver(options: PlaywrightDriverOptions): BenchD
       return withPage(join(options.profileRoot, "__environment"), async (page) => {
         // Sampled while our own browser is up, so its PIDs can be excluded and
         // whatever remains is genuinely somebody else.
-        const computeApps = tryRun("nvidia-smi", [
-          "--query-compute-apps=pid,process_name",
-          "--format=csv,noheader",
-        ]);
-        const load = summariseGpuLoad({
-          utilisationStart: gpuUtilisationNow(),
-          utilisationEnd: null,
-          computeApps,
-          ourPids: ourBrowserPids(options.profileRoot),
-          resolvedNames: resolveProcessNames(gpuProcessPids(computeApps)),
-        });
+        // Assembled in gpuload.ts, which IS examined. Only the raw command
+        // runner and the PID lookup stay on this side of the boundary.
+        const load = collectGpuLoad(
+          createNvidiaSmiIo(tryRun, () => ourBrowserPids(options.profileRoot), resolveProcessNames),
+        );
         return { ...nodeEnvironment(await readPageEnvironment(page)), externalGpuLoad: load };
       });
     },
@@ -308,30 +289,19 @@ export function createPlaywrightDriver(options: PlaywrightDriverOptions): BenchD
        * only distorted value is the presented-frame interval spanning each
        * boundary, and those are dropped below rather than reported as stalls.
        */
-      const result = await withPage(userDataDir, async (page) => {
-        const frameTimesMs: number[] = [];
-        const presentIntervalsMs: number[] = [];
-        const warnings: string[] = [];
-
-        for (let start = 0; start < poses.length; start += POSE_BATCH) {
-          if (request.signal.aborted) break;
-          const batch = poses.slice(start, start + POSE_BATCH);
-          const warmup = start === 0 ? options.warmupFrames : 0;
-          const chunk = await page.evaluate(
-            ([posesArg, warmupArg]) => globalThis.__ftpBench!.runPoses(posesArg, warmupArg),
-            [batch, warmup] as const,
-          );
-          frameTimesMs.push(...chunk.frameTimesMs);
-          // Drop the first present interval of every later batch: it spans the
-          // round-trip to Node and is not a frame the renderer produced.
-          presentIntervalsMs.push(
-            ...(start === 0 ? chunk.presentIntervalsMs : chunk.presentIntervalsMs.slice(1)),
-          );
-          warnings.splice(0, warnings.length, ...chunk.warnings);
-        }
-
-        return { frameTimesMs, presentIntervalsMs, framesMeasured: frameTimesMs.length, warnings };
-      });
+      // The batch plan and the abort loop are in batching.ts, where they are
+      // examined; this supplies only the part that needs a page.
+      const result = await withPage(userDataDir, (page) =>
+        runPoseBatches(
+          planPoseBatches(poses.length, DEFAULT_POSE_BATCH, options.warmupFrames),
+          request.signal,
+          (batch) =>
+            page.evaluate(
+              ([posesArg, warmupArg]) => globalThis.__ftpBench!.runPoses(posesArg, warmupArg),
+              [poses.slice(batch.start, batch.start + batch.count), batch.warmupFrames] as const,
+            ),
+        ),
+      );
 
       return {
         routeId: request.route.id,
@@ -339,6 +309,7 @@ export function createPlaywrightDriver(options: PlaywrightDriverOptions): BenchD
         cache: request.cache,
         frameTimesMs: result.frameTimesMs,
         presentIntervalsMs: result.presentIntervalsMs,
+        presentIntervalBoundaryIndices: result.boundaryIndices,
         startedAt,
         finishedAt: new Date().toISOString(),
         framesExpected: poses.length - options.warmupFrames,

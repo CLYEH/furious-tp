@@ -188,3 +188,86 @@ export function summariseGpuLoad(sample: GpuLoadSample): ExternalGpuLoad {
       : "量測期間未偵測到其他程序常駐於該 GPU(已以 PID 反查排除 dwm 與本 harness 自己的瀏覽器)。",
   };
 }
+
+/** The PIDs nvidia-smi listed, whatever it managed to call them. */
+export function gpuProcessPids(computeApps: string | null): number[] {
+  if (computeApps === null) return [];
+  return computeApps
+    .split(/\r?\n/)
+    .map((line) => Number(line.split(",")[0]?.trim()))
+    .filter((pid) => Number.isInteger(pid) && pid > 0);
+}
+
+/** The I/O this collection needs, injected so the WIRING can be examined too. */
+export interface GpuLoadIo {
+  utilisation(): string | null;
+  computeApps(): string | null;
+  resolveNames(pids: readonly number[]): Record<number, string>;
+  ourPids(): readonly number[];
+}
+
+/**
+ * Gather the sample AND resolve it — the step that used to sit inline inside
+ * the untestable driver.
+ *
+ * Separating the reduction was not enough. `summariseGpuLoad` carried five
+ * mutants and killed all five, while a mutant passing `resolvedNames: {}` at
+ * the CALL SITE silently undid the entire dwm fix and survived, because nothing
+ * could observe the call site. This is the seam that closes that.
+ */
+export function collectGpuLoad(io: GpuLoadIo): ExternalGpuLoad {
+  const computeApps = io.computeApps();
+  const utilisationStart = io.utilisation();
+  if (computeApps === null) {
+    // Nothing to resolve — and resolving nothing must not read as a clean rig.
+    return summariseGpuLoad({
+      utilisationStart,
+      utilisationEnd: null,
+      computeApps: null,
+      ourPids: [],
+    });
+  }
+
+  let resolvedNames: Record<number, string> = {};
+  try {
+    resolvedNames = io.resolveNames(gpuProcessPids(computeApps));
+  } catch {
+    // A failed resolver leaves occupants unidentified, so they stay in the list
+    // as unknowns. It must never empty the list: that would turn a broken
+    // lookup into a clean bill of health.
+  }
+
+  return summariseGpuLoad({
+    utilisationStart,
+    utilisationEnd: null,
+    computeApps,
+    ourPids: io.ourPids(),
+    resolvedNames,
+  });
+}
+
+/** Runs a command and returns stdout, or null when it is unavailable. */
+export type CommandRunner = (command: string, args: string[]) => string | null;
+
+/**
+ * The real nvidia-smi wiring, built HERE rather than inline in the driver.
+ *
+ * Same reason as DEFAULT_POSE_BATCH: as a lambda in the driver,
+ * `resolveNames: () => ({})` silently undid the whole dwm fix and no test could
+ * notice. Assembled in an examined module, only the raw command runner and the
+ * PID lookup stay behind the browser boundary.
+ */
+export function createNvidiaSmiIo(
+  run: CommandRunner,
+  ourPids: () => readonly number[],
+  resolveNames: (pids: readonly number[]) => Record<number, string>,
+): GpuLoadIo {
+  return {
+    utilisation: () =>
+      run("nvidia-smi", ["--query-gpu=utilization.gpu", "--format=csv,noheader,nounits"]),
+    computeApps: () =>
+      run("nvidia-smi", ["--query-compute-apps=pid,process_name", "--format=csv,noheader"]),
+    resolveNames,
+    ourPids,
+  };
+}
