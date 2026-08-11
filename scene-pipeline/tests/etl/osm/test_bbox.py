@@ -528,13 +528,16 @@ def test_uncut_endpoint_on_a_boundary_edge_is_still_handed_back_verbatim() -> No
 
 
 @pytest.mark.xfail(
-    strict=False,
+    strict=True,
     reason=(
-        "KNOWN GAP, found by differential fuzzing in round 2 and deliberately "
-        "NOT fixed here — the fix changes clipping semantics, which is a "
-        "reviewer decision, not a worker one. Recorded as a failing case rather "
-        "than only as a review comment so it cannot be lost. Remove the marker "
-        "with the fix."
+        "KNOWN GAP, adjudicated by Layer 2 in round 2 as recorded-and-not-fixed: "
+        "the fix changes clipping semantics, which is a reviewer decision, not a "
+        "worker one, and the gap is unreachable at M1 coordinates (measurements "
+        "in the docstring). strict=True deliberately: at strict=False this "
+        "marker could not fail, so a change in behaviour said nothing at all — "
+        "proven in review, where a `_snap` mutant made this case xpass while the "
+        "suite still exited 0. Strict is what turns the docstring's 'remove the "
+        "marker with the fix' from a request into something the suite enforces."
     ),
 )
 def test_a_way_that_only_touches_a_corner_from_outside_yields_nothing() -> None:
@@ -549,12 +552,33 @@ def test_a_way_that_only_touches_a_corner_from_outside_yields_nothing() -> None:
     # appears to dip 3e-14 m inside, which is enough for the midpoint check in
     # `_finish` to keep it.
     #
-    # Why it is worth recording rather than shrugging at: the trigger is a
-    # vertex sitting EXACTLY on a grid corner. Projected OSM nodes never do
-    # that — but the output of this very clipper does, on every boundary cut,
-    # which is precisely the input the 500 m re-clip will be handed. The cost is
-    # a spurious one-segment component in a QA block whose whole job is to say
-    # whether the network is connected.
+    # WHAT THIS IS NOT — round 3 correction, and the correction is the useful
+    # part. Round 2 recorded this as urgent on the claim that "projected OSM
+    # nodes never sit on a grid corner, but the output of this very clipper
+    # always does". Taken literally that is FALSE: a cut pins ONE axis, and a
+    # corner needs TWO, so the segment would have to pass exactly through the
+    # corner — a zero-measure event. Measured by feeding this clipper its own
+    # output: the M1 ETL result re-clipped by all 49 500 m tiles, then re-clipped
+    # again, twice. 46 synthetic cuts in generation 1, 23 in generations 2 and 3
+    # (the re-clip is idempotent from there). ALL of them land on a grid LINE.
+    # NONE lands on a corner.
+    #
+    # AND IT IS UNREACHABLE AT M1 COORDINATES. The gap needs the interpolation
+    # error to reach one ulp of the coordinate being added to. At the origin
+    # ulp(100) = 1.4e-14, so ~65 m of segment suffices — which is exactly why
+    # this case works against BBox(0, 0, 100, 100), the box it was written for.
+    # At M1, ulp(307000) = 5.8e-11 and ulp(2769500) = 4.7e-10: 4098x and 32817x
+    # further away. Measured, not argued: this same shape at a 500 m M1 tile
+    # corner and at the M1 bbox corner both return []; 13,258 constructed
+    # zero-measure corner touches across all 49 M1 tiles invented 0 roads; and
+    # scaling this very direction out to 23,638 km, over ~2,400 jittered
+    # directions, invented 0.
+    #
+    # So: recorded, not urgent. The next reader should not inherit round 2's
+    # false sense of urgency — one operator already did. It stays in the exam
+    # rather than in a comment because what it would cost if it ever fired is a
+    # spurious one-segment component in a QA block whose whole job is to say
+    # whether the road network is connected.
     bbox = BBox(e_min=0.0, n_min=0.0, e_max=100.0, n_max=100.0)
     corner = (0.0, 100.0)
     outside = (-172.02840816546544, -162.11734482294904)
