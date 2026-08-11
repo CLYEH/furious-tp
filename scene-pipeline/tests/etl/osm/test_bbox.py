@@ -507,6 +507,44 @@ def test_uncut_endpoint_on_a_boundary_edge_is_still_handed_back_verbatim() -> No
     assert run.indices == (None, 1)  # and it is still one of our nodes
 
 
+@pytest.mark.xfail(
+    strict=False,
+    reason=(
+        "KNOWN GAP, found by differential fuzzing in round 2 and deliberately "
+        "NOT fixed here — the fix changes clipping semantics, which is a "
+        "reviewer decision, not a worker one. Recorded as a failing case rather "
+        "than only as a review comment so it cannot be lost. Remove the marker "
+        "with the fix."
+    ),
+)
+def test_a_way_that_only_touches_a_corner_from_outside_yields_nothing() -> None:
+    # Every point of this polyline is outside the area: it starts on the
+    # min-E/max-N corner (outside, because the max edge is not ours), runs
+    # south-west — where E is immediately negative — and comes back. There is no
+    # road here for us to emit.
+    #
+    # HEAD emits a 2.8e-14 m run of TWO synthetic boundary nodes. `_snap` pins
+    # the crossed axis and interpolates the other, and at this particular slope
+    # the two axes' t values round apart just far enough that the segment
+    # appears to dip 3e-14 m inside, which is enough for the midpoint check in
+    # `_finish` to keep it.
+    #
+    # Why it is worth recording rather than shrugging at: the trigger is a
+    # vertex sitting EXACTLY on a grid corner. Projected OSM nodes never do
+    # that — but the output of this very clipper does, on every boundary cut,
+    # which is precisely the input the 500 m re-clip will be handed. The cost is
+    # a spurious one-segment component in a QA block whose whole job is to say
+    # whether the network is connected.
+    bbox = BBox(e_min=0.0, n_min=0.0, e_max=100.0, n_max=100.0)
+    corner = (0.0, 100.0)
+    outside = (-172.02840816546544, -162.11734482294904)
+    assert bbox.contains(*corner) is False
+    assert bbox.contains(*outside) is False
+
+    assert clip_polyline([corner, outside], bbox) == []  # holds today
+    assert clip_polyline([corner, outside, corner], bbox) == []  # does not
+
+
 def test_many_crossings_are_all_preserved() -> None:
     # Oversized input: 100 excursions in and out. Nothing may be silently
     # coalesced or truncated.
