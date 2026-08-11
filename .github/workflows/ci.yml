@@ -432,6 +432,12 @@ jobs:
             'markdown-link-check'
           job_wiring "the docs job swallows no failure" docs 0 \
             '(continue-on-error|[|][|])'
+          # The floor is the only job branch protection currently requires, so
+          # an empty protocol job is a PR that passes every enforced check
+          # while nothing was checked. Found by mutation: deleting this step
+          # survived a 37-mutant run.
+          job_wiring "the protocol floor actually runs the protocol check" protocol 1 \
+            'protocol-check\.mjs'
 
           # The Python the job installs must be the floor the package declares,
           # read out of pyproject.toml rather than restated here — a version
@@ -444,6 +450,18 @@ jobs:
             echo "  ok   the python job pins the requires-python floor ($py_want)"
           else
             echo "  FAIL the python job pins the requires-python floor: want [$py_want] got [$py_got]"
+            exam_fail=1
+          fi
+          # Same invariant on the other toolchain: web-client declares its own
+          # floor in engines, and a gates job below it would pass on a Node the
+          # package does not claim to support.
+          node_want="$(sed -n 's/.*"node": ">=\([0-9][0-9.]*\)".*/\1/p' \
+            web-client/package.json 2>/dev/null || true)"
+          node_got="$(job_field gates '^ *node-version:' | sed 's/[^:]*: *//')"
+          if [ -n "$node_want" ] && [ "$node_got" = "$node_want" ]; then
+            echo "  ok   the gates job pins the engines.node floor ($node_want)"
+          else
+            echo "  FAIL the gates job pins the engines.node floor: want [$node_want] got [$node_got]"
             exam_fail=1
           fi
 
