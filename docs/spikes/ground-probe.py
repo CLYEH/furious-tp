@@ -879,8 +879,11 @@ def cmd_measure(args) -> int:
             k: round(v, 1) for k, v in class_areas(features, bbox).items()
         },
         "edge": edge_stats(features, bbox),
+        # NOT re-rounded: `relation_share_of_area` is already a 4-dp fraction,
+        # and a blanket round(v, 1) over this dict turned 0.5851 into 0.6 —
+        # which is how a 58.51% share reached a draft of the report as 60%.
         "source_split": {
-            k: (round(v, 1) if isinstance(v, float) else v)
+            k: (round(v, 1) if isinstance(v, float) and abs(v) > 1 else v)
             for k, v in source_split(features, bbox).items()
         },
         "edge_band": edge_band(features, bbox, args.edge_band),

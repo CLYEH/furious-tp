@@ -184,7 +184,8 @@ south 25.013902, west 121.549391, north 25.046632, east 121.585217
 發現通道本身先踩了一個坑:
 
 ```sh
-curl -s 'https://data.taipei/api/v1/dataset/search?q=土地使用分區'   # → {"result":{...,"count":0,...}}
+curl -s 'https://data.taipei/api/v1/dataset/search?q=土地使用分區'
+# → 200,application/json,67 bytes;結果筆數欄位為 0,結果陣列為空
 ```
 
 這個端點**對任何查詢(含空查詢)都回 `count: 0`**(§2.3 的對照組)。**它證明不了資料集不存在。** 可用的通道是 SPA 自己打的那支,而且搜尋鍵是 `qs` 不是 `q`:
@@ -390,12 +391,14 @@ python docs/spikes/ground-probe.py measure \
 
 **票上問的是「能不能共用同一套裁切器」,答案是不能,而且理由用面積才看得出來:**
 
-| | feature 數 | 佔比 | **面積(m²)** | **面積佔比** |
+| | feature 數 | 佔元素數 | **各自聯集面積(m²)** | **佔總覆蓋(6,795,976 m²)** |
 |---|---|---|---|---|
-| way | 1,567 | 90.3% | 2,914,638 | 40.0% |
-| **relation** | **169** | **9.7%** | **4,109,932** | **60.0%** |
+| way | 1,567 | 90.3% | 2,914,638 | 42.9% |
+| **relation** | **169** | **9.7%** | **4,109,932** | **60.5%** |
 
-**relation 只佔元素數的 9.7%,卻承載 60.0% 的地表面積。**
+**relation 只佔元素數的 9.7%,卻承載 4,109,932 m² —— 總覆蓋面積的 60.5%。**
+
+(兩列相加 7,024,570 m² 大於聯集 6,795,976 m²,差 228,594 m²,因為 way 與 relation 的幾何彼此重疊;故上表最後一欄不是一個分割,兩者相加會超過 100%。若改以「way 聯集 + relation 聯集」為分母,relation 佔 **58.51%**。兩種算法我都列出來,因為選哪一個分母會改變數字,而結論在兩種算法下相同。)
 
 而 `scene-pipeline/src/scene_pipeline/etl/osm/read.py` 只走 `osmium.osm.WAY`:
 
@@ -595,7 +598,7 @@ FTP-6 明文**不對 NLSC 圖資授權作結論**;FTP-5 §1.3 認定服務條款
 
 若 owner 裁定採用主案或備案:
 
-1. **`scene-pipeline/` ETL 票**必須寫明:**需要 relation(multipolygon)讀取與面裁切,不能宣稱沿用 FTP-29 的 `read_extract` / `clip_polyline`**(§5.4,relation 承載 60.0% 面積)。可共用的是 `BBox` 的邊界歸屬規則。
+1. **`scene-pipeline/` ETL 票**必須寫明:**需要 relation(multipolygon)讀取與面裁切,不能宣稱沿用 FTP-29 的 `read_extract` / `clip_polyline`**(§5.4,relation 承載總覆蓋面積的 60.5%)。可共用的是 `BBox` 的邊界歸屬規則。
 2. **`contracts/` tile 層票**:需決定跨類優先順序(§5.2 的類別重疊)、預設色、以及 A/B 兩來源的圖層關係(單一資料庫 vs Collective Database——**這一項牽動授權,見 §10.2**)。
 3. **`web-client/` provider 票**:地表層在 Cesium 中的載入與 terrain(FTP-40)的疊合順序。
 4. **若採主案,先由 human 裁定 §10.2 的授權定位**,再開 1–3。
