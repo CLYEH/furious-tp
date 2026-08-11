@@ -501,6 +501,7 @@ describe("runBench — the settings a report ran under", () => {
       viewport: { width: 1920, height: 1080 },
       gpuPreference: "high-performance",
       headless: true,
+      maxSeconds: 0,
     };
     const report = await runBench({
       routes: [route("a")],

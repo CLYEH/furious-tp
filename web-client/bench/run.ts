@@ -43,6 +43,11 @@ const { values } = parseArgs({
     // and on this rig Windows then puts Chrome on the Intel UHD, which the
     // report must reject. See driver.ts.
     gpu: { type: "string", default: "high-performance" },
+    // Wind the run up after N seconds and report what it got. Useful on its own
+    // for smoke runs, and it drives the SAME abort path as Ctrl-C — which is
+    // the only way that path can be verified end to end on Windows, where a
+    // console Ctrl-C cannot be generated programmatically.
+    "max-seconds": { type: "string", default: "0" },
   },
 });
 
@@ -62,6 +67,11 @@ const gpuPreference: GpuPreference =
   values.gpu === "high-performance" || values.gpu === "auto"
     ? values.gpu
     : fail(`--gpu 必須是 high-performance | auto,收到 ${String(values.gpu)}`);
+
+const maxSeconds = Number(values["max-seconds"]);
+if (!Number.isFinite(maxSeconds) || maxSeconds < 0) {
+  fail(`--max-seconds 必須是 >= 0 的數字,收到 ${String(values["max-seconds"])}`);
+}
 
 const memoryMinutes = Number(values["memory-minutes"]);
 if (!Number.isFinite(memoryMinutes) || memoryMinutes < 0) {
@@ -191,6 +201,17 @@ async function main(): Promise<number> {
   process.on("SIGINT", onSignal);
   process.on("SIGTERM", onSignal);
 
+  if (maxSeconds > 0) {
+    // Same controller, same wind-up, same invalid report as Ctrl-C.
+    const timer = setTimeout(() => {
+      console.log(`
+bench: 已達 --max-seconds ${maxSeconds},正在收尾並輸出標記為 invalid 的部分報告…`);
+      controller.abort();
+    }, maxSeconds * 1000);
+    // Must not hold the process open once the run finishes on its own.
+    timer.unref();
+  }
+
   console.log("bench: 建置量測頁面…");
   await buildBenchPage(pageDir);
   const site = await serveBenchPage(pageDir);
@@ -222,6 +243,7 @@ async function main(): Promise<number> {
       viewport,
       gpuPreference,
       headless: !(values.headed ?? false),
+      maxSeconds,
     };
 
     report = await runBench({

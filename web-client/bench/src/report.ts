@@ -144,6 +144,8 @@ export interface BenchRunConfig {
   viewport: { width: number; height: number };
   gpuPreference: string;
   headless: boolean;
+  /** 0 = no cap. A capped run is deliberately interrupted and reports as invalid. */
+  maxSeconds: number;
 }
 
 export interface BenchReport {
