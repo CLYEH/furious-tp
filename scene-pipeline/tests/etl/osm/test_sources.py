@@ -165,6 +165,32 @@ def test_missing_content_length_is_accepted(tmp_path) -> None:
     assert record.size_bytes == len(PAYLOAD)
 
 
+def test_a_content_encoded_body_is_not_reported_as_truncated(tmp_path) -> None:
+    # Layer 2 review, round 1, nit 2. Content-Length describes the body ON THE
+    # WIRE, but requests transparently decodes Content-Encoding before
+    # iter_content hands the bytes over — so on a mirror that gzips the response
+    # the two numbers describe different things and the check fires on a
+    # perfectly good download. Refusing a good extract is worse than not
+    # checking: the operator's only recourse is to retry a 325 MB download that
+    # was never broken.
+    session = FakeSession(
+        response(headers={"Content-Length": "17", "Content-Encoding": "gzip"})
+    )
+    record = acquire_extract(URL, tmp_path, session=session)
+    assert record.size_bytes == len(PAYLOAD)
+
+
+def test_an_identity_encoded_body_is_still_length_checked(tmp_path) -> None:
+    # The guard above must not become a way to switch the check off: an explicit
+    # `identity` encoding means the bytes were not transformed, so the numbers
+    # are comparable and a short body is still a short body.
+    headers = {"Content-Length": str(len(PAYLOAD) + 100), "Content-Encoding": "identity"}
+    session = FakeSession(response(headers=headers))
+    with pytest.raises(OsmDownloadError) as excinfo:
+        acquire_extract(URL, tmp_path, session=session)
+    assert "truncated" in str(excinfo.value).lower()
+
+
 def test_checksum_mismatch_is_rejected_with_both_hashes(tmp_path) -> None:
     wrong = "0" * 64
     with pytest.raises(OsmDownloadError) as excinfo:
@@ -244,6 +270,26 @@ def test_local_source_does_not_need_a_session(tmp_path) -> None:
     src.write_bytes(PAYLOAD)
     record = acquire_extract(str(src), tmp_path / "osm")
     assert record.path.read_bytes() == PAYLOAD
+
+
+def test_copying_the_extract_onto_itself_is_an_expected_failure(tmp_path) -> None:
+    # Layer 2 review, round 1, S2. Re-running against <out>/source/<extract> —
+    # the natural way to re-clip without re-downloading — makes copyfile's
+    # source and destination the same path, and shutil raises SameFileError.
+    # That is an OSError, not an OsmEtlError, so it escaped the CLI's handler as
+    # a traceback with exit code 1 against a README promising exit 2 and one
+    # line. Anything the filesystem refuses here is an expected failure of this
+    # stage, not a defect in it.
+    dest = tmp_path / "osm"
+    dest.mkdir()
+    already_there = dest / "taipei.osm"
+    already_there.write_bytes(PAYLOAD)
+
+    with pytest.raises(OsmSourceError) as excinfo:
+        acquire_extract(str(already_there), dest)
+    message = str(excinfo.value)
+    assert "taipei.osm" in message
+    assert already_there.read_bytes() == PAYLOAD  # and the extract is not lost
 
 
 def test_local_checksum_is_verified(tmp_path) -> None:

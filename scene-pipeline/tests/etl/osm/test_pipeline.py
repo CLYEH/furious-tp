@@ -30,6 +30,8 @@ from pathlib import Path
 import pytest
 
 from scene_pipeline.etl.osm import BBox, main, run_osm_etl
+from scene_pipeline.etl.osm.read import read_extract
+from scene_pipeline.etl.osm.sources import ATTRIBUTION_FILENAME, ODBL_URL, OSM_ATTRIBUTION
 
 from .conftest import (
     M1_E_MAX,
@@ -42,6 +44,8 @@ from .conftest import (
     TILE_N_MIN,
     FakeResponse,
     FakeSession,
+    to_easting_northing,
+    write_osm,
     write_projected_osm,
 )
 
@@ -322,6 +326,50 @@ def test_way_re_entering_the_area_is_split_into_parts(tmp_path) -> None:
     assert all(w["name"] == "折返路" for w in parts)  # attributes ride along
 
 
+def test_a_real_node_on_the_min_edge_keeps_its_osm_id(tmp_path) -> None:
+    # Layer 2 review, round 1, B1 — the same rule as
+    # test_vertex_on_the_min_edge_keeps_its_identity_when_it_coincides_with_the_cut
+    # in test_bbox.py, but asserted at the layer that *consumes* the decision,
+    # because that is where the damage is visible: `_place` turns index None
+    # into a synthetic NEGATIVE id flagged boundary=true, and D10 conflation
+    # (FTP-31) matches on OSM ids, so a node that loses its id becomes invisible
+    # to it. `qa.dangling_node_ids` also stops considering it, which is the
+    # difference between "the source data has a dead end here" and silence.
+    #
+    # The bbox is derived from the node instead of the other way round: OSM
+    # stores coordinates as 1e-7 degrees, so a node authored at a round E value
+    # comes back ~1 cm off and never lands exactly on the edge. Deriving the
+    # edge from the projected node is exact by construction — and it is also
+    # what the re-clip case looks like in practice, where the geometry being
+    # clipped was produced by an earlier pass of this very clipper.
+    lon_edge, lat = 121.5670000, 25.0330000  # authored on OSM's 1e-7 lattice
+    lon_west, lon_in = 121.5650000, 121.5690000
+    path = write_osm(
+        tmp_path / "edge.osm",
+        [(1001, lon_west, lat), (1002, lon_edge, lat), (1003, lon_in, lat)],
+        [(10, [1001, 1002, 1003], {"highway": "residential", "name": "邊界路"})],
+    )
+    extract = read_extract(path)
+    edge_e, edge_n = to_easting_northing(extract.nodes[1002].lon, extract.nodes[1002].lat)
+    bbox = BBox(e_min=edge_e, n_min=edge_n - 500.0, e_max=edge_e + 500.0, n_max=edge_n + 500.0)
+
+    result = run_osm_etl(str(path), tmp_path / "osm", bbox)
+    doc = load(result.output_path)
+
+    node_ids = {n["id"] for n in doc["nodes"]}
+    assert 1002 in node_ids, "the node on the min edge lost its OSM identity"
+    assert not any(n["id"] < 0 for n in doc["nodes"]), "it was replaced by a synthetic cut"
+    node = next(n for n in doc["nodes"] if n["id"] == 1002)
+    assert node["boundary"] is False
+    assert node["e"] == bbox.e_min  # it really is on the edge, not merely near it
+    way = doc["ways"][0]
+    assert way["nodes"][0] == 1002
+    assert way["cut_start"] is False
+    # The QA consequence, stated as its own assertion: a degree-1 real node is a
+    # dangling end and must be reported as one.
+    assert 1002 in doc["qa"]["dangling_node_ids"]
+
+
 def test_oneway_reverse_reverses_the_geometry(tmp_path) -> None:
     # oneway=-1 has no instance in the frozen fixture, so it is staged here:
     # the node order must come out reversed and the flag normalised to 1.
@@ -517,3 +565,57 @@ def test_no_output_is_written_when_the_run_fails(tmp_path) -> None:
     bad.write_text("<osm><way id='1'><nd ref=", encoding="utf-8")
     run_cli(["--source", str(bad), "--out", str(out), "--bbox", "0", "0", "100", "100"])
     assert not (out / "intermediate" / "roads.topology.json").exists()
+
+
+def test_a_run_that_dies_while_parsing_still_leaves_the_attribution(tmp_path) -> None:
+    # Layer 2 review, round 1, S4. The failed run above DOES leave the extract
+    # in <out>/source/ — that is deliberate, it is the acquired bytes. AC2's
+    # whole argument is that source isolation means a directory you can point
+    # at; a directory holding OSM bytes and no licence notice is precisely the
+    # state that argument exists to prevent. So the notice has to be written as
+    # soon as the bytes land, not after the topology succeeds.
+    out = tmp_path / "osm"
+    bad = tmp_path / "broken.osm"
+    bad.write_text("<osm><way id='1'><nd ref=", encoding="utf-8")
+    proc = run_cli(
+        ["--source", str(bad), "--out", str(out), "--bbox", "0", "0", "100", "100"]
+    )
+    assert proc.returncode == 2
+    assert (out / "source" / "broken.osm").exists()  # the bytes are on disk...
+    attribution = out / ATTRIBUTION_FILENAME
+    assert attribution.exists(), "OSM bytes on disk with no ODbL notice beside them"
+    text = attribution.read_text(encoding="utf-8")
+    assert OSM_ATTRIBUTION in text
+    assert ODBL_URL in text
+    assert "broken.osm" in text  # and it describes THESE bytes
+
+
+def test_re_running_against_the_extract_the_last_run_preserved(tmp_path) -> None:
+    # Layer 2 review, round 1, S2. Pointing --source at <out>/source/<extract>
+    # is the obvious way to re-clip without re-downloading 325 MB, and it makes
+    # copyfile's source and destination the same path. That raised a raw
+    # shutil.SameFileError: exit code 1 and a traceback, against a README that
+    # promises exit 2 and a single line. The contract is what is under test —
+    # whether the re-run is supported is a separate question; what must never
+    # happen is the operator getting a stack trace for it.
+    out = tmp_path / "osm"
+    source = tmp_path / "seed.osm"
+    write_projected_osm(
+        source,
+        [(1, 307100.0, 2769600.0), (2, 307200.0, 2769600.0)],
+        [(10, [1, 2], {"highway": "residential"})],
+    )
+    first = run_cli(
+        ["--source", str(source), "--out", str(out), "--bbox", "0", "0", "100", "100"]
+    )
+    assert first.returncode == 0
+    preserved = out / "source" / "seed.osm"
+    assert preserved.is_file()
+
+    again = run_cli(
+        ["--source", str(preserved), "--out", str(out), "--bbox", "0", "0", "100", "100"]
+    )
+    assert again.returncode == 2, again.stderr
+    assert "Traceback" not in again.stderr
+    assert "seed.osm" in again.stderr  # it names the file the operator gave it
+    assert again.stderr.strip().startswith("error:")

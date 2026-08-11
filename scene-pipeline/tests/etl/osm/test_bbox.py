@@ -163,6 +163,12 @@ def test_duplicate_consecutive_points_are_collapsed_not_dropped() -> None:
     runs = clip_polyline([(10.0, 10.0), (10.0, 10.0), (20.0, 20.0)], BOX)
     assert len(runs) == 1
     assert runs[0].points == ((10.0, 10.0), (20.0, 20.0))
+    # The collapse also decides WHOSE identity survives, and this assertion is
+    # the only thing that says so: of two coincident real vertices the FIRST
+    # one is kept (README rule 6). Asserting the points alone let a mutant that
+    # keeps the second one through, which silently renames the node the D10
+    # conflation stage will try to match on.
+    assert runs[0].indices == (0, 2)
 
 
 def test_polyline_entirely_outside_yields_nothing() -> None:
@@ -338,6 +344,112 @@ def test_vertex_starting_on_the_max_edge_is_a_cut_not_an_original_vertex() -> No
     assert runs[0].points == ((100.0, 50.0), (50.0, 50.0))
     assert runs[0].indices == (None, 1)
     assert runs[0].cut_start is True
+
+
+# --- the endpoint-identity family ------------------------------------------
+#
+# Three README rules meet on the vertices below and nothing used to exercise the
+# meeting point (Layer 2 review, round 1, B1):
+#
+#   rule 1 — containment is min-INCLUSIVE, so a vertex on the min edge is ours;
+#   rule 4 — a synthetic cut vertex gets a NEGATIVE id flagged boundary=true;
+#   rule 6 — coincident vertices are collapsed to one.
+#
+# When a way arrives from outside and its first real vertex sits exactly on the
+# min edge, the cut point computed for the previous segment lands on that same
+# coordinate — so rule 6 fires, and rule 6 alone decides whether what survives
+# is the real vertex or the synthetic one. `_place` branches on exactly that:
+# `index is None` becomes a negative boundary id, anything else keeps the OSM
+# id. Losing the promotion therefore does not move the geometry by a
+# millimetre; it swaps a real OSM node for a synthetic one, which D10
+# conflation (it matches on OSM ids) can no longer see and which
+# `qa.dangling_node_ids` stops considering.
+#
+# Rare on today's raw OSM input, routine once this same clipper is re-run at
+# 500 m granularity over already-clipped geometry — which is the argument this
+# ticket itself uses for why the family matters.
+
+
+def test_vertex_on_the_min_edge_keeps_its_identity_when_it_coincides_with_the_cut() -> None:
+    # Enters from the west; vertex 1 sits exactly on the min E edge, which is
+    # ours, so it must come back as vertex 1 and not as a boundary cut.
+    runs = clip_polyline([(-50.0, 50.0), (0.0, 50.0), (50.0, 50.0)], BOX)
+    assert len(runs) == 1
+    run = runs[0]
+    assert run.points == ((0.0, 50.0), (50.0, 50.0))
+    assert run.indices == (1, 2)  # NOT (None, 2): the real node keeps its id
+    assert run.cut_start is False  # so the piece is not marked as cut here
+
+
+def test_vertex_on_the_min_edge_keeps_its_identity_when_the_way_leaves() -> None:
+    # The mirror direction. Here the collapse sees a REAL index first and a
+    # synthetic one second, so the promotion must NOT fire; a mutant that
+    # assigns unconditionally destroys the identity in this direction instead.
+    runs = clip_polyline([(50.0, 50.0), (0.0, 50.0), (-50.0, 50.0)], BOX)
+    assert len(runs) == 1
+    run = runs[0]
+    assert run.points == ((50.0, 50.0), (0.0, 50.0))
+    assert run.indices == (0, 1)
+    assert run.cut_end is False
+
+
+def test_vertex_on_the_min_corner_keeps_its_identity_when_it_coincides_with_the_cut() -> None:
+    # The two-axis version: at the corner both edges are crossed at the same t,
+    # so the cut point is pinned on one axis and interpolated on the other, and
+    # it still has to compare equal to the real vertex for the collapse to fire.
+    runs = clip_polyline([(-50.0, -50.0), (0.0, 0.0), (50.0, 50.0)], BOX)
+    assert len(runs) == 1
+    assert runs[0].points == ((0.0, 0.0), (50.0, 50.0))
+    assert runs[0].indices == (1, 2)
+
+
+def test_two_coincident_vertices_on_the_min_edge_keep_the_first_identity() -> None:
+    # Cut point, then TWO real vertices at the same coordinate. The promotion
+    # must fire once (synthetic -> first real vertex) and then stop, rather than
+    # walking forward to the last duplicate.
+    runs = clip_polyline([(-50.0, 50.0), (0.0, 50.0), (0.0, 50.0), (50.0, 50.0)], BOX)
+    assert len(runs) == 1
+    assert runs[0].points == ((0.0, 50.0), (50.0, 50.0))
+    assert runs[0].indices == (1, 3)
+
+
+def test_vertex_on_the_max_edge_stays_synthetic_when_it_coincides_with_the_cut() -> None:
+    # The guard on the case above: the same geometry against the MAX edge must
+    # NOT promote, because that edge belongs to the neighbouring area. A fix
+    # for the min-edge case that promoted unconditionally would hand a real OSM
+    # id to a node this area does not own, and both areas would then claim it.
+    runs = clip_polyline([(50.0, 50.0), (100.0, 50.0), (150.0, 50.0)], BOX)
+    assert len(runs) == 1
+    assert runs[0].points == ((50.0, 50.0), (100.0, 50.0))
+    assert runs[0].indices == (0, None)
+    assert runs[0].cut_end is True
+
+
+def test_uncut_endpoint_on_a_boundary_edge_is_still_handed_back_verbatim() -> None:
+    # Layer 2 review, round 1, S1. `_snap` hands an untouched endpoint back
+    # bit-for-bit only while `edge` is None — and `_clip_segment` sets `edge1`
+    # from `if t < t1`, which is false at t == t1 == 1.0. Loosen that one
+    # character to `<=` and the endpoint stops being untouched: the crossed
+    # axis is pinned (to the value it already had) and the OTHER axis is
+    # interpolated instead of returned.
+    #
+    # The witness below is the whole point: the vertex sits exactly on the min E
+    # seam, so it is both a real node of ours (min-inclusive) and a point the
+    # neighbouring area must reproduce bit-for-bit (grid.md §接縫規則 clause 1).
+    # Interpolating its northing moves it a full metre.
+    bbox = BBox(e_min=307000.0, n_min=2769000.0, e_max=307500.0, n_max=2770000.0)
+    p = (1e16, 1e16)  # absurdly far away, so `q - p` cannot be represented
+    q = (307000.0, 2769601.0)  # exactly on the min E edge, an odd metre north
+
+    assert p[1] + 1.0 * (q[1] - p[1]) == 2769600.0  # the witness distinguishes them
+    assert q[1] == 2769601.0
+
+    runs = clip_polyline([p, q], bbox)
+    assert len(runs) == 1
+    run = runs[0]
+    assert run.points[-1] == q  # verbatim, both components
+    assert run.points[-1][1] == 2769601.0  # not 2769600.0
+    assert run.indices == (None, 1)  # and it is still one of our nodes
 
 
 def test_many_crossings_are_all_preserved() -> None:

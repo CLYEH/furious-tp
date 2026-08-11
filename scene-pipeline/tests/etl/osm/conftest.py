@@ -40,11 +40,26 @@ M1_E_MIN, M1_N_MIN, M1_E_MAX, M1_N_MAX = 305500.0, 2767500.0, 309000.0, 2771000.
 TILE_E_MIN, TILE_N_MIN, TILE_E_MAX, TILE_N_MAX = 307000.0, 2769500.0, 307500.0, 2770000.0
 
 _TO_LONLAT = Transformer.from_crs("EPSG:3826", "EPSG:4326", always_xy=True)
+_TO_EN = Transformer.from_crs("EPSG:4326", "EPSG:3826", always_xy=True)
 
 
 def to_lonlat(e: float, n: float) -> tuple[float, float]:
     """EPSG:3826 -> (lon, lat), for authoring synthetic fixtures."""
     return _TO_LONLAT.transform(e, n)
+
+
+def to_easting_northing(lon: float, lat: float) -> tuple[float, float]:
+    """(lon, lat) -> EPSG:3826, in the exact call shape ``_project`` uses.
+
+    Needed by the tests that have to place a bbox edge *bit-exactly* on a node.
+    Going the other way round (author the node in EPSG:3826, convert to lon/lat)
+    cannot do it: OSM stores coordinates as 1e-7 degrees, so osmium quantises
+    whatever we write and the node lands ~1 cm away from the edge we aimed at —
+    close enough to look right and far enough that the rule under test never
+    fires. `_project` transforms lists, not scalars, so this does too.
+    """
+    eastings, northings = _TO_EN.transform([lon], [lat])
+    return float(eastings[0]), float(northings[0])
 
 
 # --- synthetic .osm XML ----------------------------------------------------
