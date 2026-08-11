@@ -1,0 +1,42 @@
+{
+  "id": "offroad-south",
+  "title": "off-road 南側低空",
+  "kind": "off-road",
+  "description": "RFC D6 route type 5. A low, curving path over the sparse southern edge of the M1 slice. WHAT THIS MEASURES TODAY: terrain (FTP-40) does not exist yet, so beneath this camera is the grey ellipsoid shell boot.ts sets, with only scattered NLSC buildings at the edges. It is therefore a near-empty-scene baseline, which is genuinely useful for D1 but is NOT yet an off-road driving measurement. Its meaning changes once FTP-40 lands terrain tiles under it, and the numbers from before and after must not be compared.",
+  "durationSeconds": 35,
+  "stepHz": 60,
+  "waypoints": [
+    {
+      "longitude": 121.5545,
+      "latitude": 25.0175,
+      "height": 160,
+      "headingDegrees": 70,
+      "pitchDegrees": -8,
+      "rollDegrees": 0
+    },
+    {
+      "longitude": 121.5625,
+      "latitude": 25.0198,
+      "height": 140,
+      "headingDegrees": 60,
+      "pitchDegrees": -6,
+      "rollDegrees": 0
+    },
+    {
+      "longitude": 121.5705,
+      "latitude": 25.0182,
+      "height": 150,
+      "headingDegrees": 95,
+      "pitchDegrees": -7,
+      "rollDegrees": 0
+    },
+    {
+      "longitude": 121.5785,
+      "latitude": 25.0215,
+      "height": 170,
+      "headingDegrees": 55,
+      "pitchDegrees": -9,
+      "rollDegrees": 0
+    }
+  ]
+}

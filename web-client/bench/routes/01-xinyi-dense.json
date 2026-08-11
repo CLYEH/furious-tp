@@ -1,0 +1,50 @@
+{
+  "id": "xinyi-dense",
+  "title": "信義區高密度建物",
+  "kind": "dense-buildings",
+  "description": "RFC D6 route type 1. Flies north-east across the densest part of the M1 slice, passing 台北101, at a height where towers fill the frame. This is the route with the most NLSC building geometry on screen and therefore the one D1's 6ms base-overhead question is really about.",
+  "durationSeconds": 45,
+  "stepHz": 60,
+  "waypoints": [
+    {
+      "longitude": 121.556,
+      "latitude": 25.029,
+      "height": 380,
+      "headingDegrees": 35,
+      "pitchDegrees": -18,
+      "rollDegrees": 0
+    },
+    {
+      "longitude": 121.561,
+      "latitude": 25.032,
+      "height": 340,
+      "headingDegrees": 40,
+      "pitchDegrees": -20,
+      "rollDegrees": 0
+    },
+    {
+      "longitude": 121.5662,
+      "latitude": 25.0345,
+      "height": 300,
+      "headingDegrees": 30,
+      "pitchDegrees": -22,
+      "rollDegrees": 0
+    },
+    {
+      "longitude": 121.5702,
+      "latitude": 25.0378,
+      "height": 330,
+      "headingDegrees": 25,
+      "pitchDegrees": -20,
+      "rollDegrees": 0
+    },
+    {
+      "longitude": 121.575,
+      "latitude": 25.0402,
+      "height": 370,
+      "headingDegrees": 20,
+      "pitchDegrees": -18,
+      "rollDegrees": 0
+    }
+  ]
+}
