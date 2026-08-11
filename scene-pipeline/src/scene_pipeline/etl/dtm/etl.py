@@ -333,6 +333,16 @@ def _publish(
     next stage would open it and find a perfectly valid header over truncated
     elevations. The record is placed first so a published GeoTIFF always has
     one; the GeoTIFF is the artefact of record, and a failed run leaves none.
+
+    That order alone is not enough. If the record lands and the raster then
+    does not — a downstream reader holding the old `dtm.tif` open is exactly
+    the case temp-then-replace exists for, and on Windows it makes os.replace
+    fail — the disk is left holding the previous GeoTIFF beside a record
+    describing the one that was never published: wrong name, url, licence,
+    sha256, valid_fraction, and nothing about it looks unusual. So the record
+    that is published now is snapshotted first and put back if the raster does
+    not follow. Both guarantees then hold at once: a published GeoTIFF has a
+    record, and a failed run changes nothing that was already there.
     """
     try:
         out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -341,6 +351,14 @@ def _publish(
 
     tmp_raster = out_path.with_name(out_path.name + ".tmp")
     tmp_record = provenance_path.with_name(provenance_path.name + ".tmp")
+    try:
+        previous_record = provenance_path.read_bytes() if provenance_path.is_file() else None
+    except OSError as exc:
+        raise DtmOutputError(
+            f"cannot read the source record already at {provenance_path}: {exc}; refusing to "
+            "publish, because a failed publish could then not put it back"
+        ) from exc
+
     try:
         with rasterio.open(
             tmp_raster,
@@ -368,7 +386,43 @@ def _publish(
                 leftover.unlink(missing_ok=True)
             except OSError:  # pragma: no cover - best effort cleanup
                 pass
-        raise DtmOutputError(f"cannot write output to {out_path}: {exc}") from exc
+        note = _restore_record(provenance_path, previous_record)
+        raise DtmOutputError(f"cannot write output to {out_path}: {exc}{note}") from exc
+
+
+def _restore_record(provenance_path: Path, previous: bytes | None) -> str:
+    """Undo a record that landed while its raster did not.
+
+    Returns "" when the record is (or has been put back) as it was found, and
+    a warning to append to the error otherwise.
+
+    Driven by comparing the file with the snapshot rather than by a "the
+    replace ran" flag: a flag is blind to a record damaged *before* the
+    replace, and `Path.write_text` truncates its target the moment it opens,
+    so a write that dies partway has already destroyed the record a flag would
+    say was untouched.
+
+    When the restore itself fails, the caller's error says so. Downgrading the
+    guarantee silently would leave behind the one artefact this whole module
+    is arranged to prevent: a provenance record that reads as normal while
+    describing a dataset that was never published.
+    """
+    try:
+        current = provenance_path.read_bytes() if provenance_path.is_file() else None
+        if current == previous:
+            return ""
+        if previous is None:
+            provenance_path.unlink(missing_ok=True)
+        else:
+            provenance_path.write_bytes(previous)
+    except OSError as exc:
+        return (
+            f"; and the previous source record at {provenance_path} could not be put back "
+            f"({exc}) — it now describes a raster that was never published, while the "
+            "elevations beside it are the previous run's. Delete it or re-run before "
+            "anything downstream reads it"
+        )
+    return ""
 
 
 def _utc_date() -> str:
