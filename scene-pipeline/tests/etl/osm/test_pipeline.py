@@ -297,10 +297,51 @@ def test_boundary_cuts_do_not_show_up_as_dangling(tile_run) -> None:
 
 def test_synthetic_node_ids_cannot_collide_with_osm_ids(tile_run) -> None:
     # OSM ids are positive; cut nodes are invented by us. Overlapping id spaces
-    # would silently merge a real junction with a boundary cut.
+    # would silently merge a real junction with a boundary cut. This covers the
+    # synthetic-vs-OSM half of README rule 4; the synthetic-vs-synthetic half is
+    # `test_each_boundary_cut_is_its_own_node` below.
     _result, doc = tile_run
     for node in doc["nodes"]:
         assert (node["id"] < 0) == node["boundary"]
+
+
+def test_each_boundary_cut_is_its_own_node(tile_run) -> None:
+    # Layer 2 review, round 2, B2 — the other half of README rule 4, and the
+    # invariant nothing in this exam used to touch: every boundary cut is its
+    # OWN node, with its own synthetic id and its own coordinate.
+    #
+    # The whole allocator is one statement in `_place`: `next_boundary_id -= 1`.
+    # Freeze it and the suite stays green — 258 passed, ruff clean — while the
+    # output welds twelve unrelated road ends into a single degree-12 junction
+    # at one arbitrary coordinate. Measured on this frozen fixture, HEAD vs that
+    # mutant: boundary nodes 12 -> 1, distinct ids 12 -> 1, distinct coordinates
+    # 12 -> 1, degrees [1]x12 -> [12], qa.node_count 211 -> 200,
+    # qa.component_sizes [208, 3] -> [197, 3]. Eleven nodes vanish and eleven
+    # cut ends silently move onto a twelfth's coordinate, and no geometry test
+    # notices: the survivor still sits exactly on an edge, so
+    # `test_boundary_nodes_sit_exactly_on_an_edge` still passes.
+    #
+    # Honest about what did NOT move: qa.component_count stayed 2 here, because
+    # the welded ends already belonged to one component. That is this fixture's
+    # luck, not a property — welding unrelated road ends is precisely the
+    # operation that merges components, and component_count is computed from
+    # exactly these ids.
+    _result, doc = tile_run
+    boundary = [n for n in doc["nodes"] if n["boundary"]]
+    assert len(boundary) >= 12  # the tile really is crossed
+
+    ids = [n["id"] for n in boundary]
+    # The invariant: one cut, one id.
+    assert len(set(ids)) == len(ids), "boundary cuts share a synthetic id"
+    # Structural, not fixture luck: a cut only ever appears at the start or end
+    # of one run of one way, so it is touched by exactly one segment. A shared
+    # id shows up here as a junction that no road actually has.
+    assert all(n["degree"] == 1 for n in boundary)
+    # Fixture-specific detector rather than an invariant — two cuts *may*
+    # legitimately coincide — but on this extract the twelve crossings are at
+    # twelve distinct coordinates, which is what makes the silent coordinate
+    # move above visible instead of merely losing ids.
+    assert len({(n["e"], n["n"]) for n in boundary}) == len(ids)
 
 
 def test_way_re_entering_the_area_is_split_into_parts(tmp_path) -> None:
