@@ -9,9 +9,13 @@ tiles, so it inherits the same convention; getting it wrong duplicates or drops
 geometry at every area seam.
 
 Cut points are snapped to the exact boundary value on the axis being crossed
-(the other axis is interpolated). That exactness is what later lets
-`contracts/spec/grid.md` §接縫規則 clause 1 hold — boundary vertices shared by
-neighbours must agree bit-for-bit, which interpolating both axes cannot promise.
+(the other axis is interpolated). That exactness is **not** what makes two
+neighbours agree with each other — they do that for free, whether or not the
+snap is there (Layer 2 review, round 2, S5; the reason previously written here
+was measured and found false). It is what makes the cut equal the boundary
+*constant*, which is what `BBox.contains` compares against and what the tile
+stage quantises on. `test_every_edge_pins_its_own_axis_exactly` carries the
+measurements.
 """
 
 from __future__ import annotations
@@ -165,7 +169,7 @@ def test_duplicate_consecutive_points_are_collapsed_not_dropped() -> None:
     assert runs[0].points == ((10.0, 10.0), (20.0, 20.0))
     # The collapse also decides WHOSE identity survives, and this assertion is
     # the only thing that says so: of two coincident real vertices the FIRST
-    # one is kept (README rule 6). Asserting the points alone let a mutant that
+    # one is kept (README rule 7). Asserting the points alone let a mutant that
     # keeps the second one through, which silently renames the node the D10
     # conflation stage will try to match on.
     assert runs[0].indices == (0, 2)
@@ -289,8 +293,10 @@ def test_cut_is_snapped_not_merely_interpolated() -> None:
     # These absurd coordinates are a *witness*: a span of ~2.2e7 m where naive
     # interpolation lands on 307500.00000000093 instead of 307500.0. The
     # guarantee has to be unconditional rather than usually-true, because the
-    # same clipper is reused at 500 m tile granularity by the tile tickets, and
-    # grid.md §接縫規則 clause 1 asks for bit equality, not near equality.
+    # same clipper is reused at 500 m tile granularity by the tile tickets and
+    # the value they key on is the boundary constant. It is NOT about clause 1 —
+    # neighbours agree with each other for free; see
+    # `test_every_edge_pins_its_own_axis_exactly` for the measurement.
     bbox = BBox(e_min=307000.0, n_min=2769000.0, e_max=307500.0, n_max=2770000.0)
     p = (-5495889.486020419, 2769600.0)
     q = (16578436.147616692, 2769600.0)
@@ -344,10 +350,23 @@ def test_every_edge_pins_its_own_axis_exactly(edge, p, q, axis, naive) -> None:
     #
     # Each case below is the same idea aimed at a different edge: a span wide
     # enough that the division and the multiplication do not cancel, so the
-    # naive value misses the constant by ~4e-9 m. Small — and the point is that
-    # size is irrelevant. grid.md §接縫規則 clause 1 asks for bit equality on a
-    # shared boundary vertex; a value that is 4e-9 m away is not equal, and the
-    # tile stage that consumes these coordinates keys on them.
+    # naive value misses the constant by ~4e-9 m.
+    #
+    # WHY that matters — corrected in round 3, because the reason this exam gave
+    # before was false (Layer 2 review, round 2, S5). It is NOT clause 1 of
+    # grid.md §接縫規則. Two neighbours agree with each other for free: they
+    # compute the same crossing from exactly negated operands, and IEEE 754
+    # returns the same quotient for `(-a)/(-b)` as for `a/b`. Measured over
+    # 800,000 crossings in four magnitude bands (origin, M1, 1e10, 1e16): zero
+    # differences in `t` and zero in the shared vertex, snap or no snap.
+    #
+    # It matters because the cut has to equal the boundary CONSTANT. That is the
+    # value `BBox.contains` compares against and the value the tile stage
+    # quantises and indexes on, and missing it is not merely cosmetic: measured
+    # at M1 scale over 200,000 wide crossings per edge, plain interpolation
+    # misses the constant 17,627 times, of which 8,675 land strictly BELOW
+    # `e_min` — outside the very box the clipper had just assigned them to —
+    # and 8,952 land strictly above `e_max`.
     bbox = BBox(e_min=307000.0, n_min=2769000.0, e_max=307500.0, n_max=2770000.0)
     boundary = getattr(bbox, edge)
 
@@ -403,16 +422,17 @@ def test_vertex_starting_on_the_max_edge_is_a_cut_not_an_original_vertex() -> No
 
 # --- the endpoint-identity family ------------------------------------------
 #
-# Three README rules meet on the vertices below and nothing used to exercise the
+# Four README rules meet on the vertices below and nothing used to exercise the
 # meeting point (Layer 2 review, round 1, B1):
 #
 #   rule 1 — containment is min-INCLUSIVE, so a vertex on the min edge is ours;
 #   rule 4 — a synthetic cut vertex gets a NEGATIVE id flagged boundary=true;
-#   rule 6 — coincident vertices are collapsed to one.
+#   rule 6 — coincident vertices are collapsed to one;
+#   rule 7 — and the collapse decides WHOSE identity survives.
 #
 # When a way arrives from outside and its first real vertex sits exactly on the
 # min edge, the cut point computed for the previous segment lands on that same
-# coordinate — so rule 6 fires, and rule 6 alone decides whether what survives
+# coordinate — so rule 6 fires, and rule 7 alone decides whether what survives
 # is the real vertex or the synthetic one. `_place` branches on exactly that:
 # `index is None` becomes a negative boundary id, anything else keeps the OSM
 # id. Losing the promotion therefore does not move the geometry by a

@@ -263,9 +263,14 @@ def test_clipped_output_stays_within_the_area(tile_run) -> None:
 
 
 def test_boundary_nodes_sit_exactly_on_an_edge(tile_run) -> None:
-    # Exactness, not tolerance: contracts/spec/grid.md §接縫規則 clause 1 requires
-    # boundary vertices shared by neighbouring areas to agree bit-for-bit, which
-    # only holds if the cut snaps the crossed axis to the boundary value.
+    # Exactness, not tolerance — but not for the reason this comment used to
+    # give (Layer 2 review, round 2, S5). Neighbours agreeing with EACH OTHER is
+    # structural and costs nothing, snap or no snap; `bbox.py`'s module
+    # docstring carries the argument and the measurement. What the snap buys,
+    # and what this asserts, is that the cut equals the boundary CONSTANT — the
+    # value `BBox.contains` compares against and the value the tile stage
+    # quantises and indexes on. A cut a few ulps off the constant is one the box
+    # itself can disown.
     _result, doc = tile_run
     boundary = [n for n in doc["nodes"] if n["boundary"]]
     assert boundary

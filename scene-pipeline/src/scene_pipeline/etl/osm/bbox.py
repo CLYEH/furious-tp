@@ -4,10 +4,24 @@ Containment follows `contracts/spec/grid.md` §邊界歸屬 — **min-inclusive,
 max-exclusive** — so a point on a shared edge belongs to exactly one area.
 
 Cutting is Liang-Barsky against the *closed* box, with the crossed axis snapped
-to the exact boundary value. The snap is what makes the seam rule
-(`contracts/spec/grid.md` §接縫規則 clause 1: neighbours must agree bit-for-bit
-on shared boundary vertices) reachable; interpolating both axes would leave the
-two sides differing in the last bits.
+to the exact boundary value.
+
+The snap is **not** what makes two neighbouring areas agree with each other.
+That agreement is free, and the claim that used to stand here was measured and
+found false (Layer 2 review, round 2, S5). Both sides compute the same crossing
+from exactly negated operands — one meets the seam as its `e_max` (numerator
+`high - start`, denominator `+delta`), the other as its `e_min` (`start - low`,
+`-delta`) — and IEEE 754 gives `(-a)/(-b)` and `a/b` the identical quotient. So
+`t` is bit-identical on both sides, and so is every coordinate derived from it,
+snapped or not: 800,000 measured crossings across four magnitude bands, zero
+differences either way.
+
+What the snap buys is equality with the boundary **constant**, which is a
+different property and the one everything downstream keys on: `contains`
+compares against the constant, and the tile stage quantises and indexes on it.
+Plain interpolation can also land a cut on the far side of the very edge it was
+computed for, where this module's own `contains` disowns it. The measurements
+live in `test_every_edge_pins_its_own_axis_exactly`.
 
 The full rule set is documented in this package's README.md.
 """
@@ -204,7 +218,7 @@ def _finish(
             # matches on OSM ids) can no longer see and which
             # `qa.dangling_node_ids` stops considering. So a real index is
             # promoted over a synthetic one — and only over a synthetic one:
-            # between two real vertices the first wins (README rule 6).
+            # between two real vertices the first wins (README rule 7).
             if kept_indices[-1] is None:
                 kept_indices[-1] = index
             continue
