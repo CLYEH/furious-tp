@@ -686,6 +686,119 @@ def highways_from_overpass(payload: dict) -> list[list[tuple[float, float]]]:
     return lines
 
 
+# --- the drivable network and the road corridor ----------------------------
+
+
+def load_drivable_classes(tags_path) -> frozenset[str]:
+    """Read `HIGHWAY_CLASSES` out of the pipeline's own tags module.
+
+    Parsed from the source rather than copied, so this probe cannot drift from
+    the definition the project actually compiles against. `etl/osm/tags.py`
+    says it plainly: "The twin is a driving simulator, so the road graph is the
+    *drivable* network: pedestrian ways are excluded on purpose." A corridor
+    that buffers footways and steps is not the corridor FTP-33 will pave.
+    """
+    import ast
+
+    tree = ast.parse(Path(tags_path).read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign):
+            continue
+        names = [t.id for t in node.targets if isinstance(t, ast.Name)]
+        if "HIGHWAY_CLASSES" not in names:
+            continue
+        call = node.value
+        if isinstance(call, ast.Call) and call.args:
+            return frozenset(ast.literal_eval(call.args[0]))
+        return frozenset(ast.literal_eval(call))
+    raise ValueError(f"HIGHWAY_CLASSES not found in {tags_path}")
+
+
+def highways_by_class(payload: dict, keep: set[str] | None = None):
+    """Highway centrelines grouped by their `highway` value."""
+    out: dict[str, list] = {}
+    for element in payload.get("elements", []):
+        if element.get("type") != "way":
+            continue
+        klass = (element.get("tags") or {}).get("highway")
+        if klass is None or (keep is not None and klass not in keep):
+            continue
+        geometry = element.get("geometry") or []
+        if len(geometry) >= 2:
+            out.setdefault(klass, []).append(_project(geometry))
+    return out
+
+
+def polygons_from_shapefile(path, encoding="utf-8"):
+    """Every valid polygon ring of a shapefile, as shapely geometry."""
+    import shapefile
+
+    reader = shapefile.Reader(str(path), encoding=encoding)
+    polys = []
+    for geom in reader.iterShapes():
+        if not geom.points:
+            continue
+        bounds = list(geom.parts) + [len(geom.points)]
+        for i in range(len(bounds) - 1):
+            ring = geom.points[bounds[i] : bounds[i + 1]]
+            if len(ring) < MIN_RING_POSITIONS:
+                continue
+            poly = Polygon([(float(x), float(y)) for x, y in ring])
+            if not poly.is_valid:
+                poly = make_valid(poly)
+                poly = _polygonal_part(poly)
+            if poly is not None and not poly.is_empty:
+                polys.append(poly)
+    return polys
+
+
+def corridor_from(lines_by_class, halfwidth_m: float, city_polys=None):
+    """The road corridor under one explicit rule.
+
+    `city_polys` is measured road SURFACE (the city's own survey); the buffer
+    is only there to reach lanes that survey did not cover. Keeping the two
+    separable is the point — the report has to be able to say which part of the
+    corridor was measured and which part was assumed.
+    """
+    from shapely.geometry import LineString
+
+    parts = []
+    if city_polys:
+        parts.extend(city_polys)
+    if halfwidth_m > 0:
+        for lines in lines_by_class.values():
+            for line in lines:
+                if len(line) >= 2:
+                    parts.append(LineString(line).buffer(halfwidth_m))
+    return unary_union(parts) if parts else Polygon()
+
+
+def blank_split(covered, corridor, buildings, bbox: BBox) -> dict:
+    """Split the uncovered area WITHOUT an order dependency.
+
+    An earlier draft subtracted the corridor first and then measured buildings
+    on the remainder, then reported that remainder as "19.0% under buildings" —
+    a true number about a sequence, stated as if it were a fact about
+    buildings. Every intersection here is measured against the gap itself, and
+    the overlap is named, so no figure depends on which subtraction ran first.
+    """
+    clip = bbox.polygon()
+    gap = clip.difference(covered)
+    in_road = gap.intersection(corridor)
+    in_bld = gap.intersection(buildings) if not buildings.is_empty else Polygon()
+    both = in_road.intersection(in_bld) if not in_bld.is_empty else Polygon()
+    blank = gap.difference(corridor).difference(buildings)
+    return {
+        "gap_m2": round(gap.area, 1),
+        "gap_in_corridor_m2": round(in_road.area, 1),
+        "gap_in_buildings_m2": round(in_bld.area, 1),
+        "gap_in_both_m2": round(both.area, 1),
+        "true_blank_m2": round(blank.area, 1),
+        "true_blank_frac_of_bbox": round(blank.area / bbox.area_m2, 6),
+        "corridor_frac_of_bbox": round(corridor.area / bbox.area_m2, 6),
+    }
+
+
 # --- commands --------------------------------------------------------------
 
 
@@ -1001,6 +1114,94 @@ def cmd_combine(args) -> int:
     return 0
 
 
+def cmd_blank(args) -> int:
+    """The headline number, under EVERY corridor rule, as a table.
+
+    This command exists because the report once published a single figure that
+    silently depended on one unsourced parameter. A number that moves by 2x
+    across defensible rules is a range, and it has to be produced as one.
+    """
+    bbox = BBox.from_area_file(args.area)
+    clip = bbox.polygon()
+
+    osm_features, _ = features_from_overpass(
+        json.loads(Path(args.osm).read_text(encoding="utf-8"))
+    )
+    sources = {"B_osm": osm_features}
+    if args.shp:
+        zoning, _ = features_from_shapefile(
+            args.shp, args.class_field or "分區簡稱", "zone", args.encoding
+        )
+        zoning, _dropped = _exclude(zoning, set(args.exclude_class or ()))
+        sources["A_zoning"] = zoning
+        sources["A_union_B"] = list(osm_features) + list(zoning)
+
+    hw_payload = json.loads(Path(args.highways).read_text(encoding="utf-8"))
+    drivable = load_drivable_classes(args.tags) if args.tags else None
+    all_lines = highways_by_class(hw_payload)
+    drv_lines = highways_by_class(hw_payload, set(drivable)) if drivable else {}
+
+    buildings = Polygon()
+    if args.buildings:
+        payload = json.loads(Path(args.buildings).read_text(encoding="utf-8"))
+        feats, _ = features_from_overpass(
+            {"elements": [{**e, "tags": {"landuse": "_b"}} for e in payload.get("elements", [])]}
+        )
+        built = build(feats)
+        if built.geoms:
+            buildings = unary_union(built.geoms).intersection(clip)
+
+    city = []
+    if args.city_roads:
+        city = [
+            g
+            for g in polygons_from_shapefile(args.city_roads, args.city_encoding)
+            if g.intersects(clip)
+        ]
+
+    rules = []
+    rules.append(("all classes @ 8.0 m (原報告)", all_lines, 8.0, None))
+    rules.append(("all classes @ 3.0 m", all_lines, 3.0, None))
+    if drivable:
+        rules.append(("drivable only @ 8.0 m", drv_lines, 8.0, None))
+        rules.append(("drivable only @ 3.5 m", drv_lines, 3.5, None))
+    if city:
+        rules.append(("city road surface only (measured)", {}, 0.0, city))
+        if drivable:
+            for hw in (2.5, 3.0, 4.0):
+                rules.append(
+                    (f"city surface + drivable @ {hw} m", drv_lines, hw, city)
+                )
+
+    report = {
+        "at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
+        "bbox_area_m2": bbox.area_m2,
+        "drivable_classes": sorted(drivable) if drivable else None,
+        "drivable_classes_source": str(args.tags) if args.tags else None,
+        "buildings_m2": round(buildings.area, 1),
+        "city_road_polygons": len(city),
+        "results": [],
+    }
+    # Corridors are built ONCE per rule and reused across sources: the same
+    # union of several thousand buffers took minutes when it was rebuilt inside
+    # the source loop, and it cannot differ between sources anyway.
+    corridors = [
+        (rule_name, corridor_from(lines, hw, polys).intersection(clip))
+        for rule_name, lines, hw, polys in rules
+    ]
+    for name, features in sources.items():
+        built = build(features)
+        covered = (
+            unary_union(built.geoms).intersection(clip) if built.geoms else Polygon()
+        )
+        for rule_name, corridor in corridors:
+            row = blank_split(covered, corridor, buildings, bbox)
+            row.update({"source": name, "rule": rule_name})
+            report["results"].append(row)
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+    return 0
+
+
 def cmd_avail(args) -> int:
     report = sample_availability(
         args.url, samples=args.samples, delay_s=args.delay, timeout=args.timeout
@@ -1053,6 +1254,20 @@ def main(argv=None) -> int:
     p_c.add_argument("--highways", default=None)
     p_c.add_argument("--road-halfwidth", type=float, default=8.0)
     p_c.set_defaults(func=cmd_combine)
+
+    p_b = sub.add_parser("blank", help="true-blank sensitivity across corridor rules")
+    p_b.add_argument("--area", required=True)
+    p_b.add_argument("--osm", required=True)
+    p_b.add_argument("--highways", required=True)
+    p_b.add_argument("--buildings")
+    p_b.add_argument("--shp")
+    p_b.add_argument("--class-field", default=None)
+    p_b.add_argument("--encoding", default="cp950")
+    p_b.add_argument("--exclude-class", action="append")
+    p_b.add_argument("--tags", help="path to etl/osm/tags.py (drivable class set)")
+    p_b.add_argument("--city-roads", help="city road-surface shapefile (measured)")
+    p_b.add_argument("--city-encoding", default="utf-8")
+    p_b.set_defaults(func=cmd_blank)
 
     p_a = sub.add_parser("avail", help="availability sampling")
     p_a.add_argument("--url", required=True)
