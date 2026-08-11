@@ -33,6 +33,11 @@ def load_probe():
     if spec is None or spec.loader is None:
         raise AssertionError(f"cannot load probe module: {PROBE}")
     module = importlib.util.module_from_spec(spec)
+    # Registered BEFORE exec: @dataclass resolves a string annotation through
+    # sys.modules[cls.__module__], which is absent for a module loaded by path
+    # alone — and it fails as an AttributeError inside dataclasses, nowhere
+    # near the cause.
+    sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
 
