@@ -19,21 +19,304 @@ jobs:
   profile:
     runs-on: ubuntu-latest
     outputs:
-      docs_only: ${{ steps.decide.outputs.docs_only }}
+      run_gates: ${{ steps.decide.outputs.run_gates }}
+      run_docs: ${{ steps.decide.outputs.run_docs }}
+      run_python: ${{ steps.decide.outputs.run_python }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
       - id: decide
-        # The decision lives in .github/profile.sh (shipped beside this
-        # workflow) so the routing logic is unit-testable outside Actions.
         run: |
-          docs_only="$(git diff --name-only "origin/${{ github.base_ref }}"...HEAD | sh .github/profile.sh)"
-          echo "docs_only=$docs_only" >> "$GITHUB_OUTPUT"
+          set -eu
 
+          # --- routing ------------------------------------------------------
+          # route(): reads the changed-file list on stdin and prints the job
+          # set for that diff as "gates=<bool> docs=<bool> python=<bool>".
+          # The self-test below and the real decision go through this ONE
+          # function — the table cannot pass while the decision differs.
+          # docs-only detection stays in .github/profile.sh (unchanged).
+          route() {
+            changed="$(cat)"
+            docs_only="$(printf '%s\n' "$changed" | sh .github/profile.sh)"
+
+            # npm gates: the docs-only reduction, unchanged.
+            if [ "$docs_only" = true ]; then gates=false; else gates=true; fi
+
+            # Markdown: ANY changed *.md is linted. docs-only is not a
+            # precondition — that was the hole that let a PR mixing .md with
+            # non-.md files (contracts/) skip markdown lint entirely. The
+            # docs-only arm is kept so a docs-only PR carrying no .md at all
+            # (e.g. only docs/*.png) still gets the reduced set it gets today.
+            if printf '%s\n' "$changed" | grep -qE '\.md$'; then md=true; else md=false; fi
+            if [ "$md" = true ] || [ "$docs_only" = true ]; then docs=true; else docs=false; fi
+
+            # Python: changes under scene-pipeline/ get ruff + pytest, unless
+            # the PR is docs-only — a README-only change is not a code change,
+            # and a docs-only PR must not pay for the Python toolchain.
+            if printf '%s\n' "$changed" | grep -qE '^scene-pipeline/'; then
+              pipeline=true
+            else
+              pipeline=false
+            fi
+            if [ "$pipeline" = true ] && [ "$docs_only" = false ]; then py=true; else py=false; fi
+
+            echo "gates=$gates docs=$docs python=$py"
+          }
+
+          # --- changed-file acquisition -------------------------------------
+          # How the file list is READ, one layer upstream of route(). It is a
+          # seam of its own because the routing table hands strings straight
+          # to route() and is therefore blind to this layer.
+          # git escapes paths holding non-ASCII bytes and wraps them in double
+          # quotes unless core.quotePath is off; quoting off is the only way
+          # to get a list the patterns can match (FTP-53 review B1).
+          changed_files() {
+            git -c core.quotePath=false diff --name-only "$1...$2" | refuse_quoted
+          }
+          # Even then, a path holding " or \ or a control character stays
+          # quoted. It cannot be routed correctly, so refuse to route at all:
+          # failing here turns the profile job red, which blocks the PR, while
+          # a wrong route just skips jobs — and GitHub counts a skipped job as
+          # a passed required check.
+          refuse_quoted() {
+            out="$(cat)"
+            case "$out" in
+              *'"'*)
+                echo "changed-file list holds a git-quoted path — refusing to route" >&2
+                return 1
+                ;;
+            esac
+            [ -z "$out" ] || printf '%s\n' "$out"
+          }
+
+          # --- output emission ----------------------------------------------
+          # How the decision REACHES the jobs. Also a seam: a decision that is
+          # right but half-written skips every downstream job.
+          # A half-written decision would skip every downstream job while this
+          # job stayed green, so the emission checks itself (review S1).
+          emit_outputs() {
+            for kv in $1; do printf 'run_%s\n' "$kv" >> "$2"; done
+            for want in run_gates run_docs run_python; do
+              grep -qE "^${want}=(true|false)\$" "$2" || {
+                echo "routing did not emit ${want} — refusing to route this PR" >&2
+                return 1
+              }
+            done
+          }
+
+          # --- exam: routing self-test --------------------------------------
+          # Table-driven cases over route(). A red case fails this step, which
+          # fails the profile job, which skips every downstream job — an
+          # unroutable PR is a blocked PR. Also the standing regression guard
+          # for the pre-existing docs-only routing (FTP-53 AC).
+          exam_fail=0
+          # expect <name> <changed files, space-separated> <expected job set>.
+          # Space-separated only because no case needs a path with a space;
+          # the real decision below feeds git's output to route() untouched.
+          expect() {
+            got="$(printf '%s' "$2" | tr ' ' '\n' | route)"
+            if [ "$got" = "$3" ]; then
+              echo "  ok   $1"
+            else
+              echo "  FAIL $1: want [$3] got [$got]"
+              exam_fail=1
+            fi
+          }
+
+          echo "routing self-test:"
+
+          # happy — the three profiles this repo actually ships
+          expect "python-only PR runs the Python job" \
+            "scene-pipeline/src/scene_pipeline/etl/dtm/__init__.py" \
+            "gates=true docs=false python=true"
+          expect "web-client-only PR runs npm gates, no Python" \
+            "web-client/src/index.ts" \
+            "gates=true docs=false python=false"
+          expect "docs-only PR skips npm gates, runs docs" \
+            "docs/TEST.md" \
+            "gates=false docs=true python=false"
+
+          # the FTP-22 hole — markdown must be linted even when not docs-only
+          expect "mixed .md + non-.md PR still runs docs" \
+            "contracts/README.md contracts/spec/grid.schema.json" \
+            "gates=true docs=true python=false"
+
+          # boundary
+          expect "empty diff routes to no reduced profile" \
+            "" \
+            "gates=true docs=false python=false"
+          # A .md-only change under scene-pipeline/ is still a docs-only PR:
+          # AC says a docs-only PR must not run the Python checks, and that
+          # outranks "the path is scene-pipeline/".
+          expect "scene-pipeline .md-only PR stays docs-only, no Python" \
+            "scene-pipeline/README.md" \
+            "gates=false docs=true python=false"
+          expect "scene-pipeline docs+code PR runs docs and Python" \
+            "scene-pipeline/README.md scene-pipeline/src/x.py" \
+            "gates=true docs=true python=true"
+          expect "root-level .md alone is still docs-only" \
+            "README.md" \
+            "gates=false docs=true python=false"
+          expect "docs-only without any .md still runs docs (no regression)" \
+            "docs/img/diagram.png" \
+            "gates=false docs=true python=false"
+          expect ".mdx is not markdown" \
+            "web-client/src/a.mdx" \
+            "gates=true docs=false python=false"
+          expect "scene-pipeline-* lookalike dir is not the pipeline" \
+            "scene-pipeline-legacy/x.py" \
+            "gates=true docs=false python=false"
+          expect "nested scene-pipeline path is not the pipeline" \
+            "docs/scene-pipeline/notes.md" \
+            "gates=false docs=true python=false"
+          # Same trap as above but on a non-docs path, so the docs-only guard
+          # cannot mask an unanchored match. Added after mutation testing:
+          # dropping the ^ anchor survived the table without this case.
+          expect "nested scene-pipeline path outside docs is not the pipeline" \
+            "web-client/src/scene-pipeline/x.ts" \
+            "gates=true docs=false python=false"
+          expect "workflow-only PR (this ticket) runs npm gates only" \
+            ".github/workflows/ci.yml" \
+            "gates=true docs=false python=false"
+
+          # --- exam: changed-file acquisition -------------------------------
+          # The table above feeds route() strings, so it cannot see a defect
+          # in HOW the list is read — and that is exactly where one lived
+          # (review B1): git escapes paths holding non-ASCII bytes AND wraps
+          # them in double quotes, so "docs/\350\250\255...md" misses ^docs/,
+          # ^scene-pipeline/ and \.md$ alike. Three patterns miss at once and
+          # every miss falls towards "do not run" — the silent green this
+          # ticket exists to kill. Pinning that in the routing table would
+          # mean asserting route() un-escapes paths, which is the wrong
+          # contract in the wrong place; these cases drive the real
+          # changed_files() against a real repo instead.
+          acq="$(mktemp -d)"
+          (
+            cd "$acq"
+            git init -q .
+            mkdir -p docs scene-pipeline/src
+            echo seed > docs/seed.md
+            git add -A
+            git -c user.email=ci@ci -c user.name=ci commit -qm base
+            git branch base
+            echo x > "docs/設計筆記.md"
+            echo x > "scene-pipeline/src/資料載入.py"
+            git add -A
+            git -c user.email=ci@ci -c user.name=ci commit -qm non-ascii
+          ) > /dev/null
+
+          got="$( (cd "$acq" && changed_files base HEAD) | route )"
+          want="gates=true docs=true python=true"
+          if [ "$got" = "$want" ]; then
+            echo "  ok   non-ASCII paths are read raw and route like any other"
+          else
+            echo "  FAIL non-ASCII paths are read raw and route like any other: want [$want] got [$got]"
+            exam_fail=1
+          fi
+          rm -rf "$acq"
+
+          # Paths holding " or \ or a control character stay quoted even with
+          # quotePath off, and cannot be routed correctly either. Refuse to
+          # route them: a red profile blocks the PR, a skipped job does not
+          # (GitHub counts a skipped job as a passed required check).
+          if printf '%s\n' '"scene-pipeline/src/a\"b.py"' | refuse_quoted > /dev/null 2>&1; then
+            echo "  FAIL a still-quoted path is refused, not mis-routed: want refusal, got acceptance"
+            exam_fail=1
+          else
+            echo "  ok   a still-quoted path is refused, not mis-routed"
+          fi
+
+          # --- exam: output emission ----------------------------------------
+          # The decision only reaches the jobs through $GITHUB_OUTPUT.
+          expect_emit() {
+            # expect_emit <name> <decision> <emitted lines, comma-joined | REFUSED>
+            f="$(mktemp)"
+            if emit_outputs "$2" "$f" 2> /dev/null; then
+              got="$(tr '\n' ',' < "$f")"
+            else
+              got=REFUSED
+            fi
+            rm -f "$f"
+            if [ "$got" = "$3" ]; then
+              echo "  ok   $1"
+            else
+              echo "  FAIL $1: want [$3] got [$got]"
+              exam_fail=1
+            fi
+          }
+          expect_emit "a complete decision reaches the jobs as run_* outputs" \
+            "gates=true docs=false python=true" \
+            "run_gates=true,run_docs=false,run_python=true,"
+          expect_emit "an incomplete decision is refused, not half-emitted" \
+            "gates=true docs=false" \
+            "REFUSED"
+
+          # --- exam: workflow wiring ----------------------------------------
+          # Everything above proves the decision; none of it can see the YAML
+          # that carries the decision to the jobs. The fail-open regression
+          # caught in review (S1) lived entirely in the `if:` strings, and a
+          # one-character typo in the `outputs:` block would skip all three
+          # jobs while profile stayed green — invisible to required checks,
+          # which count skipped as passed. So this file is read back and
+          # asserted mechanically. Patterns are written escaped so that the
+          # assertion lines cannot satisfy themselves.
+          wiring() {
+            # wiring <name> <expected match count> <ERE over ci.yml>
+            n="$(grep -cE "$3" .github/workflows/ci.yml || true)"
+            if [ "$n" = "$2" ]; then
+              echo "  ok   $1"
+            else
+              echo "  FAIL $1: want $2 matching line(s) in ci.yml, got $n"
+              exam_fail=1
+            fi
+          }
+          wiring "gates runs unless routing explicitly says false" 1 \
+            "^ *if: needs\.profile\.outputs\.run_gates != 'false'\$"
+          wiring "docs runs unless routing explicitly says false" 1 \
+            "^ *if: needs\.profile\.outputs\.run_docs != 'false'\$"
+          wiring "python runs unless routing explicitly says false" 1 \
+            "^ *if: needs\.profile\.outputs\.run_python != 'false'\$"
+          wiring "no job is gated on a positive match (that is fail-open)" 0 \
+            "if: needs\.profile\.outputs\.[a-z_]+ == "
+          wiring "profile exports run_gates" 1 \
+            '^ *run_gates: .*steps\.decide\.outputs\.run_gates'
+          wiring "profile exports run_docs" 1 \
+            '^ *run_docs: .*steps\.decide\.outputs\.run_docs'
+          wiring "profile exports run_python" 1 \
+            '^ *run_python: .*steps\.decide\.outputs\.run_python'
+          wiring "the routing diff is read with quoting off" 1 \
+            'git -c core\.quotePath=false diff --name-only'
+          wiring "the link check reads its file list with quoting off" 1 \
+            'git -c core\.quotePath=false ls-files'
+
+          if [ "$exam_fail" -ne 0 ]; then
+            echo "routing self-test FAILED — refusing to route this PR"
+            exit 1
+          fi
+          echo "routing self-test: all cases pass"
+          # --- end exam -----------------------------------------------------
+
+          # --- the real decision ---------------------------------------------
+          # Read the list once: the log and the decision are then guaranteed
+          # to be the same list (they used to be two separate git calls).
+          changed="$(changed_files "origin/${{ github.base_ref }}" HEAD)"
+          echo "changed files:"
+          printf '%s\n' "$changed" | sed 's/^/  /'
+          decision="$(printf '%s\n' "$changed" | route)"
+          echo "routing decision: $decision"
+          # route() prints "<job>=<bool>" words; the outputs are "run_<job>".
+          emit_outputs "$decision" "$GITHUB_OUTPUT"
+
+  # Every downstream condition is "run unless routing explicitly said false".
+  # A missing or misspelled output then means the checks RUN, not that they
+  # are skipped: skipped counts as passed on a required check, so fail-open
+  # here would be a silent green (FTP-53 review S1). This also keeps `gates`
+  # bit-for-bit equivalent to the docs_only != 'true' it replaced, degraded
+  # cases included.
   gates:
     needs: profile
-    if: needs.profile.outputs.docs_only != 'true'
+    if: needs.profile.outputs.run_gates != 'false'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -51,9 +334,30 @@ jobs:
       - run: npm run build
       - run: npm run test
 
+  # scene-pipeline/ gates (FTP-53). Python version is the floor declared by
+  # scene-pipeline/pyproject.toml (requires-python = ">=3.11", ruff
+  # target-version = "py311"); the install and check steps are the ones
+  # scene-pipeline/README.md prescribes, so CI and the README cannot drift.
+  python:
+    needs: profile
+    if: needs.profile.outputs.run_python != 'false'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: scene-pipeline
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e ".[dev]"
+      - run: ruff check .
+      - run: pytest
+
   docs:
     needs: profile
-    if: needs.profile.outputs.docs_only == 'true'
+    if: needs.profile.outputs.run_docs != 'false'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -62,7 +366,12 @@ jobs:
           node-version: 20
       # The docs-only reduced set: markdown lint + link check.
       - run: npx --yes markdownlint-cli2 "**/*.md" "!**/node_modules/**"
-      - run: npx --yes markdown-link-check --quiet $(git ls-files '*.md')
+      # Same quoting defect as the routing diff (review B1): git ls-files
+      # escapes non-ASCII paths too, and the escaped token reaches the checker
+      # as a path that does not exist (ENOENT, exit 1). Widening this job from
+      # docs-only to "any PR carrying .md" multiplies where that lands, so the
+      # same one flag goes here.
+      - run: npx --yes markdown-link-check --quiet $(git -c core.quotePath=false ls-files '*.md')
 
   # Hard floor: runs on EVERY profile — a docs PR must not merge unchecked.
   protocol:
