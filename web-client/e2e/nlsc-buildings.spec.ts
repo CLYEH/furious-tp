@@ -76,6 +76,34 @@ test("信義區 NLSC 建物出現在畫面上", async ({ page }, testInfo) => {
   ).toBe(true);
   testInfo.annotations.push({ type: "camera", description: JSON.stringify(settled.camera) });
 
+  // D5, end to end and against the real service. Every other fingerprint case
+  // runs on a fetch mock; this is the one that proves the digest is really
+  // computed in a browser, from a real NLSC response, and really persisted —
+  // which is what "首次記錄" has to mean for the next session to compare.
+  const record = await page
+    .waitForFunction(
+      () => {
+        for (let i = 0; i < localStorage.length; i++) {
+          const key = localStorage.key(i);
+          if (key?.startsWith("ftp:nlsc-tileset-watch:")) return localStorage.getItem(key);
+        }
+        return null;
+      },
+      undefined,
+      { timeout: 120_000 },
+    )
+    .then((handle) => handle.jsonValue() as Promise<string>);
+  const parsed = JSON.parse(record) as {
+    url: string;
+    establishedHash: string | null;
+    observations: { hash: string; count: number }[];
+  };
+  expect(parsed.url).toContain("3dtiles.nlsc.gov.tw");
+  expect(parsed.establishedHash, "no fingerprint was recorded").toMatch(/^[0-9a-f]{64}$/);
+  expect(parsed.observations).toHaveLength(1);
+  expect(parsed.observations[0]?.hash).toBe(parsed.establishedHash);
+  testInfo.annotations.push({ type: "fingerprint", description: parsed.establishedHash ?? "none" });
+
   const screenshot = testInfo.outputPath("xinyi-nlsc-buildings.png");
   await page.screenshot({ path: screenshot });
   await testInfo.attach("xinyi-nlsc-buildings", { path: screenshot, contentType: "image/png" });
