@@ -25,10 +25,11 @@ Three.js」的翻案門檻 —— **沒有指定機器就沒有意義**。同一
 | 獨顯(bench 用) | NVIDIA GeForce RTX 4060 Laptop GPU | `nvidia-smi --query-gpu=name --format=csv,noheader` |
 | 獨顯 VRAM | 8 GB(8188 MiB) | `nvidia-smi --query-gpu=memory.total --format=csv,noheader` |
 | 內顯(**不得**用於 bench) | Intel UHD Graphics | `Get-CimInstance Win32_VideoController \| Select-Object Name` |
-| GPU 驅動 | `566.14`(NVIDIA 版號)= `32.0.15.6614`(Windows 版號) | `nvidia-smi --query-gpu=driver_version --format=csv,noheader` |
+| GPU 驅動(NVIDIA 版號) | `566.14` | `nvidia-smi --query-gpu=driver_version --format=csv,noheader` |
+| GPU 驅動(Windows 版號) | `32.0.15.6614` —— 與上一列是同一顆驅動的兩種寫法 | `Get-CimInstance Win32_VideoController \| Where-Object { $_.Name -match 'NVIDIA' } \| Select-Object DriverVersion` |
 | OS | Windows 11 Home,10.0.26200(Build 26200),64-bit | `Get-CimInstance Win32_OperatingSystem \| Select-Object Caption,Version,BuildNumber,OSArchitecture` |
 | 螢幕 | 1920 x 1080 @ 144 Hz | `Get-CimInstance Win32_VideoController \| Where-Object CurrentHorizontalResolution \| Select-Object CurrentHorizontalResolution,CurrentVerticalResolution,CurrentRefreshRate` |
-| Chrome | 151.0.7922.76(2026-08-11 當日) | `(Get-Item 'C:\Program Files\Google\Chrome\Application\chrome.exe').VersionInfo.ProductVersion` |
+| Chrome | 151.0.7922.76(2026-08-11 當日) | `@("$env:ProgramFiles\Google\Chrome\Application\chrome.exe", "$env:LOCALAPPDATA\Google\Chrome\Application\chrome.exe") \| Where-Object { Test-Path $_ } \| ForEach-Object { (Get-Item $_).VersionInfo.ProductVersion }`(涵蓋全機與 per-user 兩種安裝位置) |
 | Node | v24.14.1(2026-08-11 當日) | `node --version` |
 
 **Chrome 與 Node 的版號是快照,會過期,而且應該過期。** D6 要求的是「Chrome 最新穩定版」,
@@ -54,6 +55,9 @@ D6 列的條件:1920×1080、Chrome 最新穩定版、乾淨 profile、**強制�
 
 跑 bench 前執行。**exit code = 不符項數;全通過為 0。**
 
+直接整段貼進 PowerShell 視窗即可。若要存成 `.ps1`,**請存成 UTF-8 with BOM** —— Windows
+PowerShell 5.1 會把不帶 BOM 的 zh-TW 字面值當 ANSI 讀,直接爆字串未結束的解析錯誤。
+
 ```powershell
 $fail = 0
 function Check($name, $ok, $detail) {
@@ -72,18 +76,29 @@ Check 'AC 電源模式' ($ov -eq 'ded574b5-45a0-4f42-8737-46345c09c238') "Active
 $smi = (nvidia-smi --query-gpu=name,memory.total --format=csv,noheader) 2>$null
 Check '獨顯 + VRAM' ($LASTEXITCODE -eq 0 -and $smi -match 'RTX 4060' -and [int](($smi -split ',')[1] -replace '\D') -ge 8000) "nvidia-smi: $smi"
 
-# 3. 顯示模式 1920x1080 @ 144Hz。
-$m = Get-CimInstance Win32_VideoController | Where-Object { $_.CurrentHorizontalResolution } | Select-Object -First 1
-Check '顯示模式' ($m.CurrentHorizontalResolution -eq 1920 -and $m.CurrentVerticalResolution -eq 1080 -and $m.CurrentRefreshRate -eq 144) `
-  "$($m.CurrentHorizontalResolution)x$($m.CurrentVerticalResolution) @ $($m.CurrentRefreshRate)Hz"
+# 3. 顯示模式:必須「只有一台顯示器」且為 1920x1080 @ 144Hz。
+#    不可只取第一筆:Win32_VideoController 的列舉順序沒有保證,接上外接螢幕後
+#    「取第一筆」是擲硬幣 —— 排到內建面板就會在 4K 螢幕接著的狀態下 PASS。
+$modes = @(Get-CimInstance Win32_VideoController | Where-Object { $_.CurrentHorizontalResolution })
+$dispOk = $modes.Count -eq 1 -and $modes[0].CurrentHorizontalResolution -eq 1920 -and $modes[0].CurrentVerticalResolution -eq 1080 -and $modes[0].CurrentRefreshRate -eq 144
+$dispTxt = (@($modes | ForEach-Object { "$($_.CurrentHorizontalResolution)x$($_.CurrentVerticalResolution) @ $($_.CurrentRefreshRate)Hz" }) -join '; ')
+Check '顯示模式' $dispOk "$(@($modes).Count) display(s): $dispTxt"
 
-# 4. 無其他 GPU 負載(bench 自己的 chrome.exe 不算)。
+# 4. 無其他 GPU 負載。
+#    只排除 dwm.exe(桌面視窗管理員):它開機起常駐、關不掉,是清單裡唯一的永久成員。
+#    先取 PID 再用 Get-Process 解名字,而不是吞掉 nvidia-smi 的 [Insufficient Permissions]
+#    —— 後者會把真正不明的高權限 GPU 佔用者一起藏掉。
+#    chrome 不豁免:preflight 跑在 bench 之前,那時 bench 的 Chrome 還不存在,豁免它
+#    只會放行日常瀏覽器對 GPU 的佔用。
 $util = [int]((nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader) -replace '\D')
-$apps = @(nvidia-smi --query-compute-apps=process_name --format=csv,noheader) | Where-Object { $_ -and $_ -notmatch 'chrome\.exe' }
+$gpuPids = @(nvidia-smi --query-compute-apps=pid --format=csv,noheader) | Where-Object { $_ }
+$apps = @($gpuPids | ForEach-Object { (Get-Process -Id ([int]$_) -ErrorAction SilentlyContinue).ProcessName }) |
+  Where-Object { $_ -and $_ -ne 'dwm' }
 Check 'GPU 閒置' ($util -le 5 -and $apps.Count -eq 0) "utilization=$util%; 其他佔用 GPU 的行程: $(if ($apps.Count) { $apps -join '; ' } else { '(無)' })"
 
 # 5. 版本記錄(不做斷言,理由見第 1 節)。
-Write-Output ("INFO  Chrome = {0}" -f (Get-Item 'C:\Program Files\Google\Chrome\Application\chrome.exe').VersionInfo.ProductVersion)
+$chromeExe = @("$env:ProgramFiles\Google\Chrome\Application\chrome.exe", "$env:LOCALAPPDATA\Google\Chrome\Application\chrome.exe") | Where-Object { Test-Path $_ } | Select-Object -First 1
+Write-Output ("INFO  Chrome = {0}" -f $(if ($chromeExe) { (Get-Item $chromeExe).VersionInfo.ProductVersion } else { '(找不到 chrome.exe)' }))
 Write-Output ("INFO  Node   = {0}" -f (node --version))
 
 Write-Output ''
@@ -91,38 +106,71 @@ Write-Output $(if ($fail -eq 0) { '全部通過:機器處於 RIG.md 規格內。
 exit $fail
 ```
 
-**這條檢查不是橡皮圖章。** 2026-08-11 首次執行時它就擋下了這台機器 —— 當時背景開著
-Brave 與 Acrobat:
+**這條檢查不是橡皮圖章。** 2026-08-12 於這台機器實際執行,當時背景開著 Brave 與 Acrobat:
 
 ```text
 PASS  插電 — BatteryStatus=2 (2=AC)
 PASS  AC 電源模式 — ActiveOverlayAcPowerScheme=ded574b5-45a0-4f42-8737-46345c09c238
 PASS  獨顯 + VRAM — nvidia-smi: NVIDIA GeForce RTX 4060 Laptop GPU, 8188 MiB
-PASS  顯示模式 — 1920x1080 @ 144Hz
-FAIL  GPU 閒置 — utilization=36%; 其他佔用 GPU 的行程: ...brave.exe; ...brave.exe; ...Acrobat.exe
+PASS  顯示模式 — 1 display(s): 1920x1080 @ 144Hz
+FAIL  GPU 閒置 — utilization=0%; 其他佔用 GPU 的行程: brave; brave; Acrobat
+INFO  Chrome = 151.0.7922.76
+INFO  Node   = v24.14.1
 
 1 項不符 —— 此時量到的數字不得用於 D6 判定。
 ```
 
-各項在不符時分別會長什麼樣:拔掉電源線 → `插電` FAIL(`BatteryStatus=1`);把 Windows
-電源模式調離「最佳效能」→ `AC 電源模式` FAIL(overlay 變成
-`961cc777-2547-4f9d-8174-7d86181b8a7a` = Better Battery-life,或 `00000000-…` = 無 overlay);
-`nvidia-smi` 不存在或獨顯被停用 → `獨顯 + VRAM` FAIL;外接螢幕或改更新率 → `顯示模式`
-FAIL 並印出實際模式;背景有任何非 bench 的 GPU 行程 → `GPU 閒置` FAIL 並**列出行程名**,
-不只說「不符」。
+同一時刻 `nvidia-smi` 吐出的**完整**清單如下(四筆,沒有省略):
+
+```text
+21032, C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe
+24204, C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe
+2000, [Insufficient Permissions]
+22936, C:\Program Files\Adobe\Acrobat DC\Acrobat\Acrobat.exe
+```
+
+**第三筆 PID 2000 就是 `dwm.exe`** —— 它是高權限行程,非提權的 `nvidia-smi` 解不出名字,
+只吐 `[Insufficient Permissions]`,但 `Get-Process -Id 2000` 不提權就解得出 `dwm`。它開機
+後即常駐、整個 session 都在,**是這份清單裡唯一關不掉的成員**。這就是檢查必須指名排除
+它、而且必須用 PID 反查名字的原因:若照名字字串過濾,它會永遠留在清單裡,`GPU 閒置`
+就變成一條**沒有任何機器狀態能通過**的檢查 —— 正是本節下面要說的那種「比沒有檢查更糟」。
+
+### 每一條檢查的兩個方向
+
+一條檢查要能用,得同時成立兩件事:**不符時真的會擋**,而且**符合時真的通得過**。這是兩
+個獨立的證明 —— 只證明前者,可能得到一條永遠亮紅燈、因而被當雜訊略過的檢查。
+
+| 檢查 | 不符時會回報什麼 | 通得過的狀態 |
+| --- | --- | --- |
+| 插電 | 拔掉電源線 → FAIL,印出 `BatteryStatus=1` | 插電時 PASS(上面的實跑) |
+| AC 電源模式 | 調離「最佳效能」→ FAIL,印出實際 overlay(`961cc777-…` = Better Battery-life,或 `00000000-…` = 無 overlay) | AC overlay 為 `ded574b5-…` 時 PASS(上面的實跑) |
+| 獨顯 + VRAM | `nvidia-smi` 不存在、獨顯被停用、或卡對但 VRAM 不足 → FAIL,印出實際 `nvidia-smi` 回應 | 4060 + 8188 MiB 時 PASS(上面的實跑) |
+| 顯示模式 | 接上第二台顯示器 → FAIL(**不論列舉順序**);解析度或更新率不對 → FAIL。訊息印出顯示器數量與**每一台**的實際模式 | 單一 1920x1080@144 面板時 PASS(上面的實跑) |
+| GPU 閒置 | 任何非 dwm 的行程佔著 GPU、或 utilization > 5% → FAIL,並**列出行程名** | 關掉那些行程後 PASS,整份 exit=0 |
+
+最後一列是這份文件修過的一個實際缺陷:早先的版本只用名字字串排除 `chrome.exe`,`dwm`
+於是永遠留在清單裡,`GPU 閒置` 恆 FAIL、exit code 恆 ≥ 1,而本節開頭卻寫著「全通過為
+0」—— 一個不可達的宣稱。**一個永遠回報「不符」的檢查,幾週後就會被當成雜訊略過,那比
+沒有檢查更糟。**
+
+順帶一提,`chrome` **不在**豁免名單裡是刻意的:preflight 跑在 bench **之前**,那時 bench
+的 Chrome 還不存在,豁免它只會放行你日常開著的瀏覽器對 GPU 的佔用。
 
 #### 為什麼電源檢查讀的是 overlay,不是 `powercfg /getactivescheme`
 
 D6 寫「高效能電源」,直覺會去讀電源計畫。**在這台機器上那樣讀會得到錯的答案。**
-Windows 11 只留下一個電源計畫,連 High performance 都不存在:
+`powercfg` 只列得出一個電源計畫:
 
 ```text
 > powercfg /list
 Power Scheme GUID: 381b4222-f694-41f0-9685-ff5bb260df2e  (Balanced) *
 ```
 
-照這個讀,結論是「不符合 D6,且無從切換」。但 Windows 11 真正的「電源模式」是
-**overlay**,`getactivescheme` 根本不報告它:
+(經典的 High performance 計畫 `8c5e7fda-…` 沒有被列出;它的 registry key 仍在,用 GUID
+仍可 `/setactive` 啟用 —— 只是不出現在清單裡,所以照清單看會以為沒有這個選項。)
+
+照這個讀,結論會是「這台機器是 Balanced,不符合 D6」。**但那是讀錯了旋鈕。** Windows 11
+真正的「電源模式」是 **overlay**,`getactivescheme` 根本不報告它:
 
 ```text
 > Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Power\User\PowerSchemes'
@@ -205,7 +253,7 @@ harness 讀到的 renderer 必須寫進報告最上層,不符即把整份標為 
 
 | 條件 | 落實方式 |
 | --- | --- |
-| 1920×1080 | preflight 第 3 項檢查顯示模式;bench 視窗尺寸由 harness 固定,兩者都要成立 |
+| 1920×1080 | preflight 第 3 項要求**只有一台顯示器**且模式為 1920x1080@144(接了第二台就 FAIL,不論列舉順序);bench 視窗尺寸另由 harness 固定,兩者都要成立 |
 | Chrome 最新穩定版 | 不釘版號(理由見第 1 節);每次 run 記錄實際版本進報告 |
 | 乾淨 profile | 每次 run 用全新的暫時 user-data-dir,不沿用日常 profile(擴充套件、既有快取都會污染數字) |
 | 強制獨顯 | 2.2 的旗標 + 斷言 |
@@ -224,6 +272,9 @@ D6 要求冷、熱快取**分開記錄**,不可混為一個數字。
 「符合 60 FPS」是把最惡劣路徑藏起來。
 
 ## 4. 量測協定(D6 摘要)
+
+> **這一節是 RFC D6 數字的副本,只為閱讀方便而存在。任何一項與 D6 原文不一致時,以
+> D6 原文為準**,並回頭修正本節 —— 副本天生會漂,不要拿它去推翻 RFC。
 
 - 每次 **3 runs 取中位**;JSON 報告入 repo artifact。
 - 回歸判定:對前版基線 **p95 劣化 > 10% 即 fail**。
