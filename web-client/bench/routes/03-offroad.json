@@ -1,0 +1,42 @@
+{
+  "id": "offroad-south",
+  "title": "off-road 南側低空",
+  "kind": "off-road",
+  "description": "RFC D6 route type 5. A low, curving path over the southern edge of the M1 slice. WHAT THIS MEASURES TODAY, measured rather than assumed: this is one of the HEAVIEST views in the repo, not a light one. At 140-170 m with a pitch of -6 to -9 degrees the frustum reaches the horizon and contains the whole Taipei basin. A camera FROZEN at waypoint 0 holds a steady 229 ms per frame over 900 frames and pulls 301 NLSC responses / 98 MB without ever moving. Cost follows what is IN THE FRUSTUM, not what is under the camera: from the same position, looking straight down (pitch -90) drops it to 27 ms - and still pulls 20.7 MB, so 'nothing under it but the grey shell' is false too. It is therefore NOT an empty-scene baseline and must not be read as one: D1's revert trigger is about an EMPTY scene, and no route in this repo measures that. Terrain (FTP-40) will change what is underneath, which is not what this route is paying for.",
+  "durationSeconds": 35,
+  "stepHz": 60,
+  "waypoints": [
+    {
+      "longitude": 121.5545,
+      "latitude": 25.0175,
+      "height": 160,
+      "headingDegrees": 70,
+      "pitchDegrees": -8,
+      "rollDegrees": 0
+    },
+    {
+      "longitude": 121.5625,
+      "latitude": 25.0198,
+      "height": 140,
+      "headingDegrees": 60,
+      "pitchDegrees": -6,
+      "rollDegrees": 0
+    },
+    {
+      "longitude": 121.5705,
+      "latitude": 25.0182,
+      "height": 150,
+      "headingDegrees": 95,
+      "pitchDegrees": -7,
+      "rollDegrees": 0
+    },
+    {
+      "longitude": 121.5785,
+      "latitude": 25.0215,
+      "height": 170,
+      "headingDegrees": 55,
+      "pitchDegrees": -9,
+      "rollDegrees": 0
+    }
+  ]
+}

@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="utf-8" />
+    <title>furious-tp bench</title>
+    <link rel="stylesheet" href="./cesium/Widgets/widgets.css" />
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        overflow: hidden;
+        background: #14171a;
+      }
+      #scene {
+        position: absolute;
+        inset: 0;
+      }
+    </style>
+  </head>
+  <body>
+    <!--
+      No status paragraph, unlike public/index.html. boot.ts already treats a
+      missing status element as fine, and an element the bench never reads is
+      one more thing in the layout of the page being measured.
+    -->
+    <div id="scene"></div>
+    <script>
+      // Same contract as the deployed page: Cesium resolves its workers and
+      // assets against this at import time, so a classic script has to set it
+      // before the module runs.
+      window.CESIUM_BASE_URL = "./cesium/";
+    </script>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

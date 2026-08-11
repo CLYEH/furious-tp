@@ -1,0 +1,42 @@
+{
+  "id": "expressway-straight",
+  "title": "高速長直線",
+  "kind": "high-speed-straight",
+  "description": "RFC D6 route type 2. A straight west-to-east traverse of the whole M1 slice at constant heading. Deliberately faster than a road vehicle (~80 m/s): sustained fast translation is the worst-case access pattern for 3D tile streaming, which is what this route exists to stress. It measures the streaming path, not a driving experience.",
+  "durationSeconds": 40,
+  "stepHz": 60,
+  "waypoints": [
+    {
+      "longitude": 121.5512,
+      "latitude": 25.033,
+      "height": 260,
+      "headingDegrees": 90,
+      "pitchDegrees": -10,
+      "rollDegrees": 0
+    },
+    {
+      "longitude": 121.5622,
+      "latitude": 25.033,
+      "height": 250,
+      "headingDegrees": 90,
+      "pitchDegrees": -10,
+      "rollDegrees": 0
+    },
+    {
+      "longitude": 121.5732,
+      "latitude": 25.033,
+      "height": 250,
+      "headingDegrees": 90,
+      "pitchDegrees": -10,
+      "rollDegrees": 0
+    },
+    {
+      "longitude": 121.5842,
+      "latitude": 25.033,
+      "height": 260,
+      "headingDegrees": 90,
+      "pitchDegrees": -10,
+      "rollDegrees": 0
+    }
+  ]
+}
