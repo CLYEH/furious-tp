@@ -29,6 +29,10 @@ jobs:
       - id: decide
         run: |
           set -eu
+          # changed_files is a pipeline, so without this its exit status is the
+          # guard's and a dead git reads as "nothing changed" — which skips the
+          # two path-conditional jobs (FTP-57 S5).
+          set -o pipefail
 
           # --- routing ------------------------------------------------------
           # route(): reads the changed-file list on stdin and prints the job
@@ -70,9 +74,14 @@ jobs:
           # to route() and is therefore blind to this layer.
           # git escapes paths holding non-ASCII bytes and wraps them in double
           # quotes unless core.quotePath is off; quoting off is the only way
-          # to get a list the patterns can match (FTP-53 review B1).
+          # to get a list the patterns can match (FTP-53 review B1). Rename
+          # detection is the same defect one flag over (FTP-57 B2): it is on by
+          # default and collapses a rename to its destination alone, so a PR
+          # that moves a module out of scene-pipeline/ shows nothing under
+          # scene-pipeline/ and skips the Python job. Both flags exist to make
+          # the list say what changed, not what it now looks like.
           changed_files() {
-            git -c core.quotePath=false diff --name-only "$1...$2" | refuse_quoted
+            git -c core.quotePath=false diff --name-only --no-renames "$1...$2" | refuse_quoted
           }
           # Even then, a path holding " or \ or a control character stays
           # quoted. It cannot be routed correctly, so refuse to route at all:
