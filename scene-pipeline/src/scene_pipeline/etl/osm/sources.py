@@ -77,6 +77,7 @@ def _download(url: str, target: Path, session: object | None, timeout: float) ->
         with http.get(url, stream=True, timeout=timeout) as response:  # type: ignore[union-attr]
             response.raise_for_status()
             declared = response.headers.get("Content-Length")
+            encoding = response.headers.get("Content-Encoding")
             written = 0
             with target.open("wb") as handle:
                 for chunk in response.iter_content(chunk_size=_CHUNK_BYTES):
@@ -87,7 +88,15 @@ def _download(url: str, target: Path, session: object | None, timeout: float) ->
         target.unlink(missing_ok=True)
         raise OsmDownloadError(f"failed to download {url}: {exc}") from exc
 
-    if declared is not None and str(declared).strip().isdigit():
+    # Content-Length describes the body *on the wire*, but `iter_content`
+    # decodes Content-Encoding before handing the bytes over — so against a
+    # mirror that compresses the response the two numbers count different
+    # things and this check would reject a perfectly good extract. Refusing a
+    # good download is worse than not checking it: the only recourse on offer
+    # is to re-fetch 325 MB that were never damaged. `identity` means the body
+    # was not transformed, so the numbers stay comparable.
+    transformed = encoding is not None and encoding.strip().lower() not in ("", "identity")
+    if not transformed and declared is not None and str(declared).strip().isdigit():
         expected = int(declared)
         if expected != written:
             target.unlink(missing_ok=True)
@@ -128,7 +137,19 @@ def acquire_extract(
             )
         dest_dir.mkdir(parents=True, exist_ok=True)
         target = dest_dir / origin.name
-        shutil.copyfile(origin, target)
+        try:
+            shutil.copyfile(origin, target)
+        except OSError as exc:
+            # Pointing --source at the extract a previous run preserved in
+            # <out>/source/ is the obvious way to re-clip without re-fetching
+            # 325 MB, and it makes source and destination the same path:
+            # shutil raises SameFileError, which is an OSError and would
+            # otherwise escape the CLI's handler as a traceback with exit 1.
+            # Every way the filesystem can refuse this copy is an expected
+            # failure of this stage, so they all leave as one line.
+            raise OsmSourceError(
+                f"OSM source file could not be copied into {dest_dir}: {exc}"
+            ) from exc
 
     digest, size = _digest(target)
     if expected_sha256 is not None and digest != expected_sha256:
