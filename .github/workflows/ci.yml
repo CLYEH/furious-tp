@@ -215,7 +215,11 @@ jobs:
             git -c user.email=ci@ci -c user.name=ci commit -qm non-ascii
           ) > /dev/null
 
-          got="$( (cd "$acq" && changed_files base HEAD) | route )"
+          # `|| got=` so that an acquisition that REFUSES (or dies) is reported
+          # as this named case rather than aborting the step under set -e with
+          # nothing but a bare exit status. Found by mutation: dropping the
+          # quoting flag made the step red without naming what broke.
+          got="$( (cd "$acq" && changed_files base HEAD) | route )" || got="acquisition failed"
           want="gates=true docs=true python=true"
           if [ "$got" = "$want" ]; then
             echo "  ok   non-ASCII paths are read raw and route like any other"
@@ -246,7 +250,7 @@ jobs:
             git -c user.email=ci@ci -c user.name=ci commit -qm move-out
           ) > /dev/null
 
-          got="$( (cd "$ren" && changed_files base HEAD) | route )"
+          got="$( (cd "$ren" && changed_files base HEAD) | route )" || got="acquisition failed"
           want="gates=true docs=false python=true"
           if [ "$got" = "$want" ]; then
             echo "  ok   moving a module out of scene-pipeline/ still runs the Python job"
