@@ -574,6 +574,17 @@ def test_a_way_that_only_touches_a_corner_from_outside_yields_nothing() -> None:
     # scaling this very direction out to 23,638 km, over ~2,400 jittered
     # directions, invented 0.
     #
+    # THE PRECISE TRIGGER, measured in round 3 with a generator that writes
+    # vertices ON the boundary constants — the generator round 2 lacked, which
+    # is exactly why round 2 only ever saw the corner form. A corner is NOT
+    # required: a vertex 0 or 1 ulp away from a boundary LINE will do. But it is
+    # never sufficient on its own. Of 1,954 violating polylines found at M1 and
+    # 500 m tile scale, every one had an input vertex within 1 ulp of a boundary
+    # constant AND a segment of at least 1e6 m — none had a shorter segment. Two
+    # ulps outside, or a start point at any realistic distance, and the fragment
+    # is gone. The longest segment possible in a Taiwan extract is a few hundred
+    # km, so the ETL cannot reach this.
+    #
     # So: recorded, not urgent. The next reader should not inherit round 2's
     # false sense of urgency — one operator already did. It stays in the exam
     # rather than in a comment because what it would cost if it ever fired is a
