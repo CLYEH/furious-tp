@@ -9,3 +9,4 @@ if [ -n "$changed" ] && ! printf '%s\n' "$changed" | grep -qvE '(^docs/|\.md$)';
 else
   echo false
 fi
+# ftp-62 verifier probe (temp)
