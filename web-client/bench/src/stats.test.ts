@@ -183,7 +183,14 @@ describe("summariseSeries", () => {
    * be loud.
    */
   it("throws on an empty series instead of scoring it as zero", () => {
+    // The message, not just the type. Mutation testing found that deleting the
+    // explicit empty-series guard changes nothing observable: the percentile
+    // helper downstream also rejects an empty array, and also with a
+    // RangeError. `toThrow(RangeError)` therefore passed with the guard gone,
+    // which made this case evidence about the helper rather than about the
+    // contract it is here to pin.
     expect(() => summariseSeries([])).toThrow(RangeError);
+    expect(() => summariseSeries([])).toThrow(/沒有任何 frame 樣本/);
   });
 
   it.each([

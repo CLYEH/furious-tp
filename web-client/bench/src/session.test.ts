@@ -142,6 +142,33 @@ describe("runBench — a complete run", () => {
     }
   });
 
+  it("finishes a route's cache states before moving to the next route", async () => {
+    // Mutation testing found that swapping the two loops — every route cold,
+    // then every route warm — passed every case here: the per-route
+    // cold-before-warm check above cannot see it, and the order check below
+    // only used one cache state. It is observable, though: the report's route
+    // order is the schedule, and two runs that schedule differently do not
+    // diff cleanly.
+    const fake = fakeDriver();
+    const report = await runBench({
+      routes: [route("a"), route("b")],
+      cacheStates: ["cold", "warm"],
+      driver: fake.driver,
+    });
+    expect(fake.calls.map((c) => `${c.routeId}:${c.cache}`)).toEqual([
+      "a:cold",
+      "a:warm",
+      "b:cold",
+      "b:warm",
+    ]);
+    expect(report.routes.map((r) => `${r.routeId}:${r.cache}`)).toEqual([
+      "a:cold",
+      "a:warm",
+      "b:cold",
+      "b:warm",
+    ]);
+  });
+
   it("runs routes in the order given, every time", async () => {
     // Two runs of the same version must produce comparable files; a set-ordered
     // or concurrent schedule would reorder `routes[]` between runs and make a
@@ -234,6 +261,35 @@ describe("runBench — interruption", () => {
       signal: controller.signal,
     });
     expect(report.routes.find((r) => r.routeId === "a")?.frameTimesMs).toEqual([8, 9, 10]);
+  });
+
+  it("marks the report invalid when the abort lands during the LAST route", async () => {
+    /**
+     * The hole mutation testing opened, and the worst one in this file.
+     *
+     * Every other interruption case is caught by the check at the TOP of the
+     * next iteration — so with two or more routes left, deleting the check
+     * after the await changes nothing. On the final route there is no next
+     * iteration: the loop ends normally, `interrupted` is never set, and the
+     * run produces a report that says valid=true about a run the operator
+     * interrupted. That is precisely the misleading-report failure AC5 exists
+     * to forbid, and nothing here could see it.
+     */
+    const controller = new AbortController();
+    const fake = fakeDriver({
+      onCall: () => {
+        controller.abort();
+      },
+    });
+    const report = await runBench({
+      routes: [route("a")],
+      cacheStates: ["cold"],
+      driver: fake.driver,
+      signal: controller.signal,
+    });
+    expect(fake.calls).toHaveLength(1);
+    expect(report.valid).toBe(false);
+    expect(report.invalidReason).toMatch(/中斷|interrupt/i);
   });
 
   it("still produces a well-formed report when aborted before the first route", async () => {
