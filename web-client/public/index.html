@@ -3,15 +3,47 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>furious-tp — test environment</title>
+    <title>furious-tp — 臺北開放資料 3D 數位孿生</title>
+    <link rel="stylesheet" href="./dist/cesium/Widgets/widgets.css" />
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: #14171a;
+        color: #e8eaed;
+        font-family: system-ui, "Noto Sans TC", sans-serif;
+      }
+      #scene {
+        position: absolute;
+        inset: 0;
+      }
+      #scene-status {
+        position: absolute;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        z-index: 1;
+        margin: 0;
+        padding: 0.5rem 0.75rem;
+        background: rgba(20, 23, 26, 0.82);
+        font-size: 0.8125rem;
+        line-height: 1.5;
+      }
+    </style>
   </head>
   <body>
-    <h1>furious-tp — test environment</h1>
-    <p>臺北開放資料 3D 數位孿生(M0 scaffold)。</p>
-    <p id="probe">loading…</p>
+    <div id="scene"></div>
+    <p id="scene-status">場景啟動中…</p>
+    <script>
+      // Cesium resolves its workers and assets against this at import time, so
+      // it has to be set by a classic script before the module runs. Relative
+      // to the page, which keeps the GitHub Pages subpath working.
+      window.CESIUM_BASE_URL = "./dist/cesium/";
+    </script>
     <script type="module">
-      import { greet } from "./dist/index.js";
-      document.getElementById("probe").textContent = greet("test-env");
+      import { start } from "./dist/index.js";
+      start("scene");
     </script>
   </body>
 </html>
