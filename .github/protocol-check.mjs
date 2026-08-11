@@ -35,3 +35,5 @@ if (errors.length) {
   process.exit(1);
 }
 console.log("protocol-check: OK");
+
+// FTP-62 probe: temporary no-op comment to measure CODEOWNERS review requirement. Do not merge.
