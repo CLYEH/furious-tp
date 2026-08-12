@@ -15,6 +15,7 @@
 
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { LOCK_FILE, isReclaimable } from "./src/workspace.ts";
+import { stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { parseArgs } from "node:util";
@@ -190,6 +191,10 @@ async function reclaimOldWorkspaces(): Promise<void> {
       const verdict = isReclaimable({
         ownerPid: await readOwnerPid(path),
         isRunning: processIsRunning,
+        // Closes the window between mkdtemp and the lock file landing.
+        ageMs: await stat(path)
+          .then((info) => Date.now() - info.birthtimeMs)
+          .catch(() => Number.POSITIVE_INFINITY),
       });
       if (!verdict.reclaim) {
         kept += 1;

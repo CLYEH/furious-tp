@@ -100,7 +100,12 @@ describe("assembleReport — a complete run", () => {
     const report = assembleReport(input());
     expect(report.valid).toBe(true);
     expect(report.invalidReason).toBeNull();
-    expect(report.schemaVersion).toBe(REPORT_SCHEMA_VERSION);
+    // The literal, not the constant. `toBe(REPORT_SCHEMA_VERSION)` is a
+    // tautology — it holds for any value the constant takes, so a mutant
+    // changing the version survived it. A schema version that can change
+    // without a test noticing is not a schema version.
+    expect(report.schemaVersion).toBe(2);
+    expect(REPORT_SCHEMA_VERSION).toBe(2);
   });
 
   it("carries the raw frame time series as well as the summary", () => {
@@ -361,6 +366,16 @@ describe("assembleReport — which GPU actually drew this", () => {
     );
     expect(report.valid).toBe(false);
     expect(report.routes.find((r) => r.cache === "cold")?.frameTimesMs).toEqual([8, 9, 10]);
+  });
+
+  it("names page/main.ts, not only driver.ts, as beyond the exam", () => {
+    // The gap was documented as "driver.ts" everywhere while page/main.ts —
+    // which holds the only source of frameTimesMs and of the GPU string — was
+    // never named. A known gap that appears in no shipped file does not exist
+    // for whoever later relies on the number.
+    const report = assembleReport(input());
+    expect(report.limitations.join(" ")).toContain("page/main.ts");
+    expect(report.limitations.join(" ")).toMatch(/readGpu/);
   });
 
   it("carries its own limitations, not just the PR that produced it", () => {
